@@ -1,0 +1,12 @@
+# models / audio / logs — keep the repo to source only
+*.pt
+*.wav
+*.mp3
+*.genome.txt
+*.npz
+train.log
+selftest.log
+gallery/
+variations/
+__pycache__/
+*.pyc
