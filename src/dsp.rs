@@ -167,6 +167,72 @@ pub fn detect_midi(x: &[f32], sr: f32) -> i32 {
     (69.0 + 12.0 * (f / 440.0).log2()).round() as i32
 }
 
+/// Unison thickener: 4 detuned voices (±depth cents) with small decorrelating
+/// offsets, wrap-around so looped buffers stay seamless. `amount` 0..1.
+pub fn thicken(x: &[f32], sr: f32, amount: f32) -> Vec<f32> {
+    if amount < 0.01 || x.len() < 64 {
+        return x.to_vec();
+    }
+    let depth = 5.0 + 25.0 * amount; // cents at full spread
+    let gain = 0.18 + 0.45 * amount; // per-voice level
+    let mut out = x.to_vec();
+    for (k, c) in [-1.0f32, -0.45, 0.45, 1.0].iter().enumerate() {
+        let ratio = 2.0f32.powf(c * depth / 1200.0);
+        let offs = (sr * 0.004 * (k as f32 + 1.0)) as usize;
+        for i in 0..x.len() {
+            let pos = i as f32 * ratio;
+            let j = pos as usize;
+            if j + 1 >= x.len() {
+                break;
+            }
+            let frac = pos - j as f32;
+            let s = x[j] * (1.0 - frac) + x[j + 1] * frac;
+            out[(i + offs) % x.len()] += s * gain;
+        }
+    }
+    out
+}
+
+const CEILING: f32 = 0.9; // peak ceiling
+const RMS_CAP: f32 = 0.25; // loudness guard (~-12 dBFS) — screech protection
+const KNEE: f32 = 0.75; // soft-clip knee start
+
+/// Built-in output safety: peak normalize -> loudness guard -> soft-knee
+/// ceiling -> click-killing edge fades (one-shots only; loops stay seamless).
+/// Guarantees nothing played or saved can clip or blast sustained loudness.
+pub fn safety(x: &mut [f32], sr: f32, looped: bool) {
+    if x.is_empty() {
+        return;
+    }
+    let peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    if peak > CEILING {
+        let s = CEILING / peak;
+        x.iter_mut().for_each(|v| *v *= s);
+    }
+    let rms = (x.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>() / x.len() as f64).sqrt() as f32;
+    if rms > RMS_CAP {
+        let s = RMS_CAP / rms;
+        x.iter_mut().for_each(|v| *v *= s);
+    }
+    let span = CEILING - KNEE;
+    for v in x.iter_mut() {
+        let a = v.abs();
+        if a > KNEE {
+            *v = v.signum() * (KNEE + ((a - KNEE) / span).tanh() * span);
+        }
+    }
+    if !looped {
+        let n = (sr * 0.003) as usize;
+        let n = n.min(x.len() / 2).max(1);
+        for i in 0..n {
+            let g = i as f32 / n as f32;
+            x[i] *= g;
+            let last = x.len() - 1 - i;
+            x[last] *= g;
+        }
+    }
+}
+
 /// Linear resample (fine for feature extraction of mono hooks).
 pub fn resample(x: &[f32], from: f32, to: f32) -> Vec<f32> {
     if (from - to).abs() < 1e-3 {

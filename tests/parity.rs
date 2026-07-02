@@ -138,6 +138,36 @@ fn archetype_seeds_are_mostly_alive() {
 }
 
 #[test]
+fn safety_limits_loudness_and_peaks() {
+    // worst case: full-scale constant screech
+    let sr = 22050.0;
+    let mut x: Vec<f32> = (0..22050)
+        .map(|i| (2.0 * std::f32::consts::PI * 3000.0 * i as f32 / sr).sin() * 1.5)
+        .collect();
+    dsp::safety(&mut x, sr, false);
+    let peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let rms = (x.iter().map(|v| (*v as f64) * (*v as f64)).sum::<f64>() / x.len() as f64).sqrt();
+    assert!(peak <= 0.9 + 1e-3, "peak {peak} above ceiling");
+    assert!(rms <= 0.25 + 1e-2, "rms {rms} above loudness cap");
+    // click-killing fades: edges start/end at silence
+    assert!(x[0].abs() < 1e-6 && x[x.len() - 1].abs() < 1e-6);
+}
+
+#[test]
+fn thicken_preserves_length_and_survives_safety() {
+    let sr = 22050.0;
+    let x: Vec<f32> = (0..8192)
+        .map(|i| (2.0 * std::f32::consts::PI * 110.0 * i as f32 / sr).sin() * 0.8)
+        .collect();
+    let mut y = dsp::thicken(&x, sr, 1.0);
+    assert_eq!(y.len(), x.len());
+    dsp::safety(&mut y, sr, true);
+    let peak = y.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(peak <= 0.9 + 1e-3);
+    assert!(peak > 0.1, "thickened audio should not be silent");
+}
+
+#[test]
 fn patch_roundtrip_with_note() {
     let dir = std::env::temp_dir().join("synfection_test");
     std::fs::create_dir_all(&dir).unwrap();

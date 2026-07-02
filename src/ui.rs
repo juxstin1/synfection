@@ -158,6 +158,7 @@ pub struct App {
     key: String,
     pattern_idx: usize,
     swing: f32,
+    unison: f32,
     // user patch library
     patch_name: String,
     user_patches: Vec<(String, std::path::PathBuf)>,
@@ -224,6 +225,7 @@ impl App {
             key: "F1".into(),
             pattern_idx: 0,
             swing: 0.12,
+            unison: 0.3,
             patch_name: "my_patch".into(),
             user_patches: list_patches(),
             user_sel: None,
@@ -234,9 +236,17 @@ impl App {
         app
     }
 
+    /// Unison thickener + output safety — everything heard or saved goes through this.
+    fn post(&self, audio: Vec<f32>, sr: f32, looped: bool) -> Vec<f32> {
+        let mut a = crate::dsp::thicken(&audio, sr, self.unison);
+        crate::dsp::safety(&mut a, sr, looped);
+        a
+    }
+
     fn render_current(&mut self) {
         let mut rng = SmallRng::seed_from_u64(0);
-        self.last_audio = synth::render_default(&self.genome, self.note as f32, &mut rng);
+        let raw = synth::render_default(&self.genome, self.note as f32, &mut rng);
+        self.last_audio = self.post(raw, synth::SR, false);
         self.last_sr = synth::SR;
     }
 
@@ -309,7 +319,8 @@ impl App {
         };
         let pat = loops::pattern(loops::PATTERN_NAMES[self.pattern_idx]).unwrap();
         let mut rng = SmallRng::seed_from_u64(0);
-        Some(loops::render_loop(&self.genome, root, self.bpm, &pat, 2, self.swing, &mut rng))
+        let raw = loops::render_loop(&self.genome, root, self.bpm, &pat, 2, self.swing, &mut rng);
+        Some(self.post(raw, loops::SR_OUT, true))
     }
 
     fn load_preset(&mut self, i: usize) {
@@ -821,6 +832,15 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                // center a capped-width content column when the window is wide
+                let full = ui.available_width();
+                let content_w = full.min(940.0);
+                let pad = ((full - content_w) / 2.0).max(0.0);
+                ui.horizontal_top(|ui| {
+                ui.add_space(pad);
+                ui.vertical(|ui| {
+                ui.set_width(content_w);
+
                 self.top_bar(ui);
                 ui.add_space(2.0);
                 ui.label(egui::RichText::new(&self.status).size(12.5).color(TEXT));
@@ -872,6 +892,18 @@ impl eframe::App for App {
                             if ui.button("💾 save").on_hover_text("save to your patch library\n(Documents/synfection/patches)").clicked() {
                                 app.save_current_patch();
                             }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("unison").color(DIM).small());
+                            if param_slider_w(ui, &mut app.unison, 150.0) {
+                                app.render_current();
+                            }
+                            value_box(ui, &format!("{:.0}%", app.unison * 100.0), app.unison > 0.01);
+                            ui.label(
+                                egui::RichText::new("4-voice detune spread · output is safety-limited")
+                                    .color(DIM)
+                                    .small(),
+                            );
                         });
                     });
                 };
@@ -997,7 +1029,8 @@ impl eframe::App for App {
                                     let s = &self.seedlings[i];
                                     if bud(ui, s.score).clicked() {
                                         let mut rng = SmallRng::seed_from_u64(0);
-                                        let a = synth::render_default(&s.genome, self.note as f32, &mut rng);
+                                        let raw = synth::render_default(&s.genome, self.note as f32, &mut rng);
+                                        let a = self.post(raw, synth::SR, false);
                                         self.audio.play(&a, synth::SR, false);
                                     }
                                     ui.label(
@@ -1039,7 +1072,9 @@ impl eframe::App for App {
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new(format!("target · {}", self.target_name)).color(DIM).small());
                             if ui.small_button("▶ target").clicked() {
-                                self.audio.play(&t, synth::SR, false);
+                                let mut safe = t.clone();
+                                crate::dsp::safety(&mut safe, synth::SR, false);
+                                self.audio.play(&safe, synth::SR, false);
                             }
                             if ui.small_button("↻ re-clone").clicked() {
                                 self.status = "re-cloning...".into();
@@ -1054,6 +1089,9 @@ impl eframe::App for App {
                         waveform(ui, &t, DIM, w);
                     }
                 });
+
+                }); // content column
+                }); // centering row
             });
         });
 
