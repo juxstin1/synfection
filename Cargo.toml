@@ -1,0 +1,26 @@
+[package]
+name = "synfection"
+version = "0.2.0"
+edition = "2021"
+description = "Reverse-engineer a synth patch from a sound and re-render it (Genopatch-style), single binary"
+license = "MIT"
+repository = "https://github.com/juxstin1/synfection"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+eframe = "0.29"
+hound = "3.5"
+image = { version = "0.25", default-features = false, features = ["png"] }
+libm = "0.2"
+rand = { version = "0.8", features = ["small_rng"] }
+rayon = "1.8"
+realfft = "3"
+rodio = { version = "0.19", default-features = false }
+
+[dev-dependencies]
+serde_json = "1"
+
+[profile.release]
+lto = true
+strip = true
