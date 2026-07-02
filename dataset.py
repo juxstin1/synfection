@@ -35,5 +35,7 @@ def main():
 
 if __name__ == "__main__":
     import os
+    import sys
     main()
+    sys.stdout.flush(); sys.stderr.flush()   # os._exit skips buffer flush
     os._exit(0)   # dodge ROCm-on-Windows teardown deadlock

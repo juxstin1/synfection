@@ -202,7 +202,8 @@ def cmd_gen(a):
     if a.seed_genome:
         import os
         if os.path.exists(a.seed_genome):
-            seedg = np.loadtxt(a.seed_genome).astype(np.float32)
+            from synth import upgrade_genome
+            seedg = upgrade_genome(np.loadtxt(a.seed_genome).astype(np.float32))
     print(f"sampling pool of {a.pool}...")
     pool = gp.generate(a.pool, dev, rng, gen, seedg)
     if a.archetypes:

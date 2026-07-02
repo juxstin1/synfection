@@ -10,8 +10,10 @@ Two modes:
   python reward.py gen --reward reward.pt --n 48 --pool 600 --dir rlhf/round02
   #   -> then rate it:  python serve.py --dir rlhf/round02
 
-The reward model maps a 15-param genome -> predicted quality in [0,1] (= stars/5,
-discard=0). Tiny dataset, so it's a small, heavily-regularized MLP and we report
+The reward model maps a genome (N_PARAMS) -> predicted quality in [0,1] (= stars/5,
+discard=0). Legacy 15-param (v1 engine) rounds are auto-upgraded on load with a
+neutral drive=0 — approximate under the v2 wavetable engine, good enough to keep
+the ratings useful. Tiny dataset, so it's a small, heavily-regularized MLP and we report
 honest out-of-fold correlation rather than a meaningless train score. `gen` samples
 a big archetype pool, scores it, and keeps the top-N with a diversity guard so you
 get good *and* varied patches to rate — which sharpens the next reward model.
@@ -25,7 +27,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from synth import render, to_wav, N_PARAMS, SR
+from synth import render, to_wav, upgrade_genome, N_PARAMS, SR
 import genpatches as gp
 
 
@@ -60,7 +62,7 @@ def load_rounds(round_dirs):
                 rec = genomes.get(int(row["id"]))
                 if rec is None:
                     continue
-                X.append(np.asarray(rec["genome"], dtype=np.float32))
+                X.append(upgrade_genome(np.asarray(rec["genome"], dtype=np.float32)))
                 y.append(stars_to_reward(int(rt)))
                 meta.append(dict(round=d, archetype=rec["archetype"]))
                 n += 1
@@ -222,6 +224,11 @@ def cmd_train(a):
 def cmd_gen(a):
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(a.reward, map_location=dev)
+    d_ckpt = ckpt["state_dict"]["net.0.weight"].shape[1]
+    if d_ckpt != N_PARAMS:
+        raise SystemExit(
+            f"{a.reward} expects a {d_ckpt}-param genome but the engine now has "
+            f"{N_PARAMS} — retrain first:  python reward.py train --rounds rlhf/round01 ...")
     net = RewardNet(h=ckpt.get("h", 32), p=ckpt.get("p", 0.2)).to(dev)
     net.load_state_dict(ckpt["state_dict"])
 
@@ -229,7 +236,7 @@ def cmd_gen(a):
     gen = torch.Generator(device=dev).manual_seed(a.seed)
     seedg = None
     if a.seed_genome and os.path.exists(a.seed_genome):
-        seedg = np.loadtxt(a.seed_genome).astype(np.float32)
+        seedg = upgrade_genome(np.loadtxt(a.seed_genome).astype(np.float32))
     print(f"sampling pool of {a.pool} archetype patches...")
     pool = gp.generate(a.pool, dev, rng, gen, seedg)
     scores = score_genomes(net, [p["genome"] for p in pool], dev)
@@ -295,5 +302,7 @@ def main():
 
 
 if __name__ == "__main__":
+    import sys
     main()
+    sys.stdout.flush(); sys.stderr.flush()   # os._exit skips buffer flush
     os._exit(0)   # dodge ROCm-on-Windows teardown deadlock (see train.py)

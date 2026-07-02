@@ -17,7 +17,7 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from synth import (render, melspec, denorm, to_wav,
+from synth import (render, melspec, denorm, to_wav, upgrade_genome,
                    N_PARAMS, PARAM_NAMES, SR, N)
 from model import GenoNet, device
 from losses import multiscale_stft
@@ -106,6 +106,7 @@ def main():
     if a.genome:
         g = torch.tensor([float(x) for x in a.genome.split(",")],
                          dtype=torch.float32, device=dev)
+        g = upgrade_genome(g)   # accepts legacy 15-param (v1) genomes too
         note = note_to_midi(a.note) if a.note else 48
         sf.write(a.out, to_wav(render(g, note)), SR)
         print(f"rendered genome at MIDI {note} -> {a.out}")
@@ -154,5 +155,7 @@ def main():
 
 if __name__ == "__main__":
     import os
+    import sys
     main()
+    sys.stdout.flush(); sys.stderr.flush()   # os._exit skips buffer flush
     os._exit(0)   # dodge ROCm-on-Windows teardown deadlock (see train.py)

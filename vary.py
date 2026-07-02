@@ -2,7 +2,7 @@
 Axis 1 — SOUND variations (patch space). Same note, different character.
 
 Takes a genome (from match.py's *.genome.txt, or inline) and spawns siblings by
-mutating / breeding the 15 knobs, then renders each. This is the seed of the
+mutating / breeding the knobs, then renders each. This is the seed of the
 breeding / grows-to-taste mode.
 
   # sibling sounds of a matched patch
@@ -21,7 +21,7 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from synth import render, to_wav, N_PARAMS, PARAM_NAMES, SR
+from synth import render, to_wav, upgrade_genome, N_PARAMS, PARAM_NAMES, SR
 from match import note_to_midi
 
 
@@ -30,7 +30,7 @@ def load_genome(spec, dev):
         g = np.loadtxt(spec).astype(np.float32)
     else:
         g = np.array([float(x) for x in spec.split(",")], dtype=np.float32)
-    return torch.tensor(g, device=dev)
+    return torch.tensor(upgrade_genome(g), device=dev)
 
 
 def mutate(g, amount, lock_idx, gen):
@@ -85,5 +85,7 @@ def main():
 
 if __name__ == "__main__":
     import os as _os
+    import sys as _sys
     main()
+    _sys.stdout.flush(); _sys.stderr.flush()   # os._exit skips buffer flush
     _os._exit(0)   # dodge ROCm-on-Windows teardown deadlock

@@ -104,7 +104,9 @@ def main():
 
 if __name__ == "__main__":
     import os
+    import sys
     main()
     # ROCm-on-Windows deadlocks during interpreter teardown (driver cleanup),
     # leaving unkillable GPU-hogging zombies. Skip cleanup entirely.
+    sys.stdout.flush(); sys.stderr.flush()   # os._exit skips buffer flush
     os._exit(0)

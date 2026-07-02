@@ -12,7 +12,7 @@ mutations of any known-good seed genome. Each is rendered at a note that suits t
 archetype, obvious duds (silent / click-only) are dropped, and we write:
 
   <dir>/patch_NNN.wav     rendered audio
-  <dir>/patches.jsonl     full record  {id,file,archetype,note,genome:[15]}
+  <dir>/patches.jsonl     full record  {id,file,archetype,note,genome:[N_PARAMS]}
   <dir>/ratings.csv       id,file,archetype,note,rating,notes   (you fill rating)
   <dir>/index.html        in-browser rater: scrub, 1-5 stars, export ratings.csv
 
@@ -30,57 +30,72 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from synth import render, to_wav, N_PARAMS, PARAM_NAMES, SR
+from synth import render, to_wav, upgrade_genome, N_PARAMS, PARAM_NAMES, SR
 
 # Each archetype is a set of (lo,hi) windows on the *normalized* [0,1] genome.
 # Params not listed default to the full (0,1) range. Values reflect the synth.py
 # mappings (e.g. cutoff is log 60Hz..10kHz, so 0.3 ~= 230Hz, 0.6 ~= 1.4kHz).
 _FULL = {n: (0.0, 1.0) for n in PARAM_NAMES}
 
+# wavetable morph reference (osc*_wt): 0=sine, ~0.14 tri, ~0.29 square,
+# ~0.43 saw, then pulses/formant/rich toward 1.
 ARCHETYPES = {
     # deep/sub bass: low cutoff, strong sub, saw-ish, punchy amp
-    "bass":  dict(osc1_wave=(0.0, 0.4), osc2_wave=(0.0, 0.5), osc2_detune=(0.46, 0.54),
+    "bass":  dict(osc1_wt=(0.3, 0.55), osc2_wt=(0.0, 0.5), osc2_detune=(0.46, 0.54),
                   osc_mix=(0.2, 0.6), sub_level=(0.5, 1.0), noise_level=(0.0, 0.1),
+                  drive=(0.0, 0.35),
                   cutoff=(0.22, 0.5), reso=(0.1, 0.5), filt_env=(0.2, 0.6),
                   filt_a=(0.0, 0.1), filt_d=(0.3, 0.7), amp_a=(0.0, 0.06),
                   amp_d=(0.3, 0.7), amp_s=(0.5, 1.0), amp_r=(0.05, 0.4)),
     # reese / dirty bass: wide detune, more resonance, growl
-    "reese": dict(osc1_wave=(0.0, 0.5), osc2_wave=(0.0, 0.5), osc2_detune=(0.7, 0.95),
+    "reese": dict(osc1_wt=(0.3, 0.55), osc2_wt=(0.3, 0.55), osc2_detune=(0.7, 0.95),
                   osc_mix=(0.4, 0.6), sub_level=(0.3, 0.8), noise_level=(0.0, 0.15),
+                  drive=(0.2, 0.7),
                   cutoff=(0.3, 0.6), reso=(0.45, 0.85), filt_env=(0.2, 0.6),
                   filt_a=(0.0, 0.15), filt_d=(0.25, 0.7), amp_a=(0.0, 0.08),
                   amp_d=(0.4, 0.9), amp_s=(0.5, 1.0), amp_r=(0.1, 0.5)),
     # bright sustained lead
-    "lead":  dict(osc1_wave=(0.3, 0.9), osc2_wave=(0.2, 0.8), osc2_detune=(0.5, 0.62),
+    "lead":  dict(osc1_wt=(0.4, 0.9), osc2_wt=(0.3, 0.8), osc2_detune=(0.5, 0.62),
                   osc_mix=(0.3, 0.7), sub_level=(0.0, 0.3), noise_level=(0.0, 0.1),
+                  drive=(0.0, 0.4),
                   cutoff=(0.55, 0.9), reso=(0.15, 0.55), filt_env=(0.1, 0.5),
                   filt_a=(0.0, 0.2), filt_d=(0.2, 0.7), amp_a=(0.02, 0.25),
                   amp_d=(0.3, 0.8), amp_s=(0.6, 1.0), amp_r=(0.1, 0.5)),
     # pluck: snappy filter env, little/no sustain
-    "pluck": dict(osc1_wave=(0.0, 0.6), osc2_wave=(0.0, 0.6), osc2_detune=(0.47, 0.6),
+    "pluck": dict(osc1_wt=(0.2, 0.6), osc2_wt=(0.2, 0.6), osc2_detune=(0.47, 0.6),
                   osc_mix=(0.2, 0.7), sub_level=(0.0, 0.4), noise_level=(0.0, 0.12),
+                  drive=(0.0, 0.3),
                   cutoff=(0.4, 0.75), reso=(0.3, 0.8), filt_env=(0.5, 0.95),
                   filt_a=(0.0, 0.05), filt_d=(0.05, 0.3), amp_a=(0.0, 0.04),
                   amp_d=(0.1, 0.35), amp_s=(0.0, 0.25), amp_r=(0.05, 0.3)),
     # stab: pluck-ish but a touch fuller / mid cutoff
-    "stab":  dict(osc1_wave=(0.2, 0.8), osc2_wave=(0.2, 0.8), osc2_detune=(0.45, 0.62),
+    "stab":  dict(osc1_wt=(0.3, 0.75), osc2_wt=(0.3, 0.75), osc2_detune=(0.45, 0.62),
                   osc_mix=(0.3, 0.7), sub_level=(0.1, 0.5), noise_level=(0.0, 0.12),
+                  drive=(0.1, 0.5),
                   cutoff=(0.45, 0.75), reso=(0.25, 0.7), filt_env=(0.35, 0.8),
                   filt_a=(0.0, 0.06), filt_d=(0.12, 0.4), amp_a=(0.0, 0.05),
                   amp_d=(0.15, 0.45), amp_s=(0.15, 0.5), amp_r=(0.08, 0.4)),
     # pad: slow attack, soft, sustained
-    "pad":   dict(osc1_wave=(0.1, 0.7), osc2_wave=(0.1, 0.7), osc2_detune=(0.55, 0.75),
+    "pad":   dict(osc1_wt=(0.05, 0.45), osc2_wt=(0.05, 0.45), osc2_detune=(0.55, 0.75),
                   osc_mix=(0.35, 0.65), sub_level=(0.1, 0.5), noise_level=(0.0, 0.15),
+                  drive=(0.0, 0.2),
                   cutoff=(0.4, 0.7), reso=(0.1, 0.45), filt_env=(0.1, 0.5),
                   filt_a=(0.3, 0.7), filt_d=(0.3, 0.8), amp_a=(0.35, 0.75),
                   amp_d=(0.4, 0.9), amp_s=(0.6, 1.0), amp_r=(0.4, 0.8)),
     # keys / organ-ish: balanced, medium everything
-    "keys":  dict(osc1_wave=(0.2, 0.8), osc2_wave=(0.2, 0.8), osc2_detune=(0.48, 0.58),
+    "keys":  dict(osc1_wt=(0.1, 0.6), osc2_wt=(0.1, 0.6), osc2_detune=(0.48, 0.58),
                   osc_mix=(0.3, 0.7), sub_level=(0.1, 0.5), noise_level=(0.0, 0.08),
+                  drive=(0.0, 0.25),
                   cutoff=(0.45, 0.8), reso=(0.15, 0.5), filt_env=(0.2, 0.6),
                   filt_a=(0.0, 0.15), filt_d=(0.2, 0.6), amp_a=(0.0, 0.1),
                   amp_d=(0.25, 0.7), amp_s=(0.4, 0.85), amp_r=(0.1, 0.5)),
 }
+
+# an archetype key that isn't a real synth param would be silently ignored by
+# _window's dict merge — the exact bug that hit the v1->v2 rename. Fail loud.
+for _arch, _spec in ARCHETYPES.items():
+    _bad = set(_spec) - set(PARAM_NAMES)
+    assert not _bad, f"archetype {_arch!r} has unknown params: {sorted(_bad)}"
 
 # representative MIDI note range per archetype (inclusive)
 NOTE_RANGE = {
@@ -253,7 +268,7 @@ def main():
 
     seed_genome = None
     if a.seed_genome and os.path.exists(a.seed_genome):
-        seed_genome = np.loadtxt(a.seed_genome).astype(np.float32)
+        seed_genome = upgrade_genome(np.loadtxt(a.seed_genome).astype(np.float32))
 
     patches = generate(a.n, dev, rng, gen, seed_genome)
 
@@ -292,5 +307,7 @@ def main():
 
 
 if __name__ == "__main__":
+    import sys
     main()
+    sys.stdout.flush(); sys.stderr.flush()   # os._exit skips buffer flush
     os._exit(0)   # dodge ROCm-on-Windows teardown deadlock (see train.py)

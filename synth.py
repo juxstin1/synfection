@@ -103,6 +103,23 @@ def denorm(g):
     return torch.where(lg, log, lin)
 
 
+DRIVE_IDX = PARAM_NAMES.index("drive")
+
+def upgrade_genome(g):
+    """v1 15-param genome -> current layout: insert neutral drive=0.
+    v1's saw<->square wave params land on roughly-similar wavetable positions,
+    so old genomes stay usable (approximate, not bit-exact). Accepts np array
+    or 1-d torch tensor; returns the same type."""
+    if len(g) == N_PARAMS:
+        return g
+    if len(g) != N_PARAMS - 1:
+        raise ValueError(f"genome has {len(g)} params, expected {N_PARAMS} (or 15 legacy)")
+    if torch.is_tensor(g):
+        zero = torch.zeros(1, dtype=g.dtype, device=g.device)
+        return torch.cat([g[:DRIVE_IDX], zero, g[DRIVE_IDX:]])
+    return np.insert(np.asarray(g), DRIVE_IDX, 0.0)
+
+
 def midi_to_hz(m):
     return 440.0 * 2.0 ** ((m - 69.0) / 12.0)
 
