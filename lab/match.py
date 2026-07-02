@@ -1,5 +1,5 @@
 """
-Genopatch: reverse-engineer a synth patch from a sound, then re-render it.
+Reverse-engineer a synth patch from a sound, then re-render it.
 
   1. GenoNet gives an instant genome from the mel-spectrogram.
   2. Gradient refinement (analysis-by-synthesis) polishes the genome by
@@ -73,7 +73,7 @@ def refine(genome, target, note, dev, iters=300, lr=0.05):
     return best_g, best_l
 
 
-def genopatch(target, note, net, dev, iters=300):
+def clone_patch(target, note, net, dev, iters=300):
     with torch.no_grad():
         mel = melspec(target).unsqueeze(0)
         guess = net(mel)[0]
@@ -121,7 +121,7 @@ def main():
         true_g = torch.rand(N_PARAMS, device=dev, generator=gen)
         note = 48
         target = render(true_g, note, gen=gen)
-        g, l1, g0, l0 = genopatch(target, note, net, dev, a.iters)
+        g, l1, g0, l0 = clone_patch(target, note, net, dev, a.iters)
         print(f"spec-loss  nn-only {l0:.3f}  ->  refined {l1:.3f}")
         print(f"genome MAE nn-only {(g0-true_g).abs().mean():.3f}  ->  "
               f"refined {(g-true_g).abs().mean():.3f}")
@@ -145,7 +145,7 @@ def main():
                              target.unsqueeze(0)).item()
         print(f"spec-loss (nn-only) {l1:.3f}")
     else:
-        g, l1, g0, l0 = genopatch(target, note, net, dev, a.iters)
+        g, l1, g0, l0 = clone_patch(target, note, net, dev, a.iters)
         print(f"spec-loss  nn-only {l0:.3f}  ->  refined {l1:.3f}")
     sf.write(a.out, to_wav(render(g, note)), SR)
     np.savetxt(a.out + ".genome.txt", g.cpu().numpy(), fmt="%.5f")

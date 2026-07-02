@@ -41,7 +41,7 @@ def write_tensor(f, name, t):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="genonet.pt")
-    ap.add_argument("--out", default="weights/genonet.bin")
+    ap.add_argument("--out", default="../weights/genonet.bin")
     a = ap.parse_args()
 
     net = GenoNet()

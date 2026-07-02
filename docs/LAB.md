@@ -1,21 +1,21 @@
 # The lab — training, RLHF, and research notes
 
-Everything here needs Python 3.10+ with PyTorch (`pip install -r requirements.txt`).
+Everything here lives in `lab/` and needs Python 3.10+ with PyTorch
+(`cd lab && pip install -r requirements.txt`); run the commands below from `lab/`.
 The shipped Rust binary only *runs* the model; this is where it's made.
 
-## How Synplant 2 / Genopatch works (the research)
+## The research behind it
 
-Sonic Charge's Synplant 2 ships **Genopatch**: feed it audio, a neural net emits
-synth-engine parameters that recreate the sound. They trained it on millions of
-sounds rendered from their own engine — it learns the inverse map **audio →
-parameters**. In the literature this is **automatic synthesizer programming /
+Feed audio to a neural net and have it emit the synth-engine parameters that
+recreate the sound: that's learning the inverse map **audio → parameters**.
+In the literature this is **automatic synthesizer programming /
 inverse synthesis / sound matching**: InverSynth (CNN spectrogram→params), Flow
 Synthesizer (Esling, VAE/flows over patch space), Spiegelib (research lib), and
 **DDSP** (Google — differentiable synths trained with a spectral loss).
 
 The free lunch: *you own the synth*, so `random params → audio` gives infinite
-labeled data. synfection keeps Synplant's genetic spirit too — the NN gives the
-first guess, then analysis-by-synthesis polishes it.
+labeled data. synfection adds a genetic layer on top — the NN gives the first
+guess, then analysis-by-synthesis polishes it.
 
 ## Architecture
 
@@ -53,7 +53,7 @@ val param-MAE 0.249 → 0.183, ~50 min on a consumer GPU.
 python train.py --steps 6000 --bs 32 --out genonet.pt   # train
 python match.py --selftest                              # prove the loop
 python match.py --audio hook.wav --out remake.wav       # match with Adam refine
-python export_net.py                                    # -> weights/genonet.bin for the Rust binary
+python export_net.py                                    # -> ../weights/genonet.bin for the Rust binary
 ```
 
 After retraining, run `export_net.py`, regenerate `weights/parity.json` (see

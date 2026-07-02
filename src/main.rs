@@ -21,7 +21,7 @@ use genome::{Genome, N_PARAMS, PARAMS};
 use wavio::write_wav;
 
 #[derive(Parser)]
-#[command(name = "synfection", version, about = "Clone a synth sound into a playable patch (Genopatch-style)")]
+#[command(name = "synfection", version, about = "Turn any sound into a playable synth patch — clone, grow, loop")]
 struct Cli {
     /// No subcommand opens the UI
     #[command(subcommand)]

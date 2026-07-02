@@ -3,6 +3,7 @@
 *.wav
 !weights/fixture.wav
 target/
+/rlhf/
 *.mp3
 *.genome.txt
 *.npz

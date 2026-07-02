@@ -1,4 +1,4 @@
-"""GenoNet: log-mel spectrogram -> synth genome. The Genopatch network."""
+"""GenoNet: log-mel spectrogram -> synth genome. The inverse-synthesis network."""
 
 import torch
 import torch.nn as nn

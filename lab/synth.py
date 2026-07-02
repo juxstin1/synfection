@@ -5,7 +5,7 @@ One GPU source of truth used everywhere: dataset rendering, on-the-fly training
 targets, AND gradient-based patch refinement (analysis-by-synthesis). Because the
 whole engine is differentiable, we can backprop a multi-scale spectral loss from
 the rendered audio all the way to the predicted parameters — the DDSP recipe, and
-the core of what makes Synplant 2's Genopatch produce perceptually-matched patches
+the recipe that makes matches perceptually right
 rather than merely number-matched ones.
 
 Engine: two band-limited harmonic oscillators (saw<->square morph) + sub sine +

@@ -16,7 +16,7 @@ import torch
 from synth import render, melspec, SR, N
 from model import GenoNet, device
 from losses import multiscale_stft
-from match import genopatch, detect_note
+from match import clone_patch, detect_note
 
 
 def best_window(y, sr):
@@ -49,7 +49,7 @@ def main():
         clip, t0 = best_window(y, SR)
         note = detect_note(clip)
         tgt = torch.tensor(clip, dtype=torch.float32, device=dev)
-        g, l1, g0, l0 = genopatch(tgt, note, net, dev, iters=a.iters)
+        g, l1, g0, l0 = clone_patch(tgt, note, net, dev, iters=a.iters)
         sf.write(f"{a.out}/{label}_target.wav", clip.astype(np.float32), SR)
         sf.write(f"{a.out}/{label}_remake.wav",
                  render(g, note).detach().cpu().numpy().astype(np.float32), SR)

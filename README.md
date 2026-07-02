@@ -1,94 +1,95 @@
-# synfection 🧬🎛️
+# synfection 🧬
 
-**Drop in a sound → get back the synth patch that recreates it.**
+**Hear a sound. Grow it. Play it.**
 
-A tiny neural network listens to a synth hook (a bass stab, a lead, a pluck),
-figures out the 16 synth knobs that produce that sound, and re-renders it as a
-patch you can retune, mutate, and turn into tempo-locked loops. Think
-[Synplant 2's Genopatch](https://soniccharge.com/synplant), built from scratch.
+Drop any sound into synfection and it grows a synth patch that plays it back —
+then lets you thicken it, breed it into something new, and turn it into
+club-ready loops. One small app. No install, no plugins, no accounts.
 
-One small binary. No install, no Python, no plugins — the trained network is
-baked into the executable.
+![synfection](docs/ui.png)
 
-![synfection UI](docs/ui.png)
+## What it does
 
-## Install
+- 🎧 **Clone a sound** — drop a `.wav` on the window. A neural network listens,
+  works out the recipe, and hands you a patch you can play at any note.
+- 🌱 **Grow it to taste** — the garden breeds eight variations at a time. Buds
+  that glow brighter are ones the built-in taste model predicts you'll love.
+  Click to hear, ✓ to keep, repeat until it's *yours*.
+- 🔊 **Make it thick** — a one-knob unison spreads your patch across detuned
+  voices for that wide, expensive sound.
+- 🥁 **Make loops** — twelve bassline grooves (UK garage, speed garage, bass
+  house, drum & bass) with adjustable swing. Loops play seamlessly and save as
+  ready-to-use `.wav` files.
+- 💾 **Keep everything** — name a patch, save it, and it's in your library
+  every time you open the app. Patches are tiny text files you can back up or
+  share.
+- 🛡️ **Stay safe** — everything you hear or save passes through a built-in
+  limiter and loudness guard. No experiment can clip your speakers or hurt
+  your ears.
 
-Grab a binary from [**Releases**](https://github.com/juxstin1/synfection/releases/latest):
+Stuck? The **?** button in the bottom corner explains everything in one page.
 
-| Platform | File |
+![help](docs/help.png)
+
+## Download
+
+Grab your platform from [**Releases**](https://github.com/juxstin1/synfection/releases/latest) — one file, double-click, done:
+
+| | |
 |---|---|
-| Windows | `synfection-windows-x86_64.exe` |
-| macOS (Apple Silicon) | `synfection-macos-arm64` |
-| macOS (Intel) | `synfection-macos-x86_64` |
-| Linux | `synfection-linux-x86_64` |
+| **Windows** | `synfection-windows-x86_64.exe` |
+| **macOS** (M1/M2/M3/M4) | `synfection-macos-arm64` |
+| **macOS** (Intel) | `synfection-macos-x86_64` |
+| **Linux** | `synfection-linux-x86_64` |
 
-macOS / Linux: `chmod +x synfection-*` first. On macOS the first launch needs
-right-click → Open (unsigned binary), or `xattr -d com.apple.quarantine synfection-*`.
+macOS / Linux: run `chmod +x synfection-*` once. On macOS, the first launch is
+right-click → Open (it's an unsigned indie binary).
 
-Or build from source (needs [Rust](https://rustup.rs)):
+## Your first five minutes
 
-```bash
-cargo install --git https://github.com/juxstin1/synfection
-```
+1. Open it. Press **▶ play** — that's the *First Light* preset.
+2. Browse presets with **◀ ▶**: garage stabs, an organ bass, a slow-blooming
+   long stab, a deep sub, a reese growl, an acid squelch...
+3. Drag a **branch of the plant** and play again. Longer branch = more of that
+   ingredient.
+4. In the **garden**, press **🌱 grow**. Click buds to hear them; press **✓**
+   under your favorite. Do it a few times — you're breeding a sound.
+5. In the **loop lab**, pick `speed_walk`, set your BPM, press **▶ loop**.
+6. Love it? Type a name, hit **💾 save**. It's yours forever, under
+   *YOUR PATCHES* in the dropdown.
 
-## Use it
+Got a sound you wish you could play? Drop the `.wav` straight onto the window —
+an isolated bass or lead (a one-shot, or a stem) works best.
 
-**Double-click the binary** (or run `synfection` with no arguments) to open the
-app:
+## The sounds it knows
 
-- **Clone**: drop a `.wav` on the window (or hit *open wav*) and the net grows a
-  patch that recreates it, with live progress.
-- **Presets**: 12 factory patches — garage stabs, an Innerbloom-style long stab,
-  organ stab, reese, acid, deep sub, plucks, pads — browse with ◀ ▶.
-- **Garden**: grow 8 offspring from the current patch (or from bass / reese /
-  stab / pad... archetype seeds), each **scored by a reward model trained on
-  real star-ratings**. Click a bud to hear it, ✓ to adopt it as the new seed and
-  grow the next generation — Synplant-style breed-to-taste.
-- **Plant**: drag the 16 branches to garden the patch by hand; precise sliders
-  with real values (Hz / cents / seconds) on the right.
-- **Loop lab**: 12 UK-garage / bass-house / DnB patterns with swing — loops play
-  gapless until you stop them, and save as 44.1k wavs.
-- Plus A/B compare, undo/redo (ctrl+z/y), reward-ranked *random*, and a master
-  volume.
+The synth inside is a 16-ingredient recipe: two morphing wavetable oscillators,
+a sub, shaped noise, drive, a resonant filter, and full envelopes. The neural
+network taught itself to reverse-engineer that recipe by listening to
+**192,000 sounds it rendered for itself** — every bass, stab, and pluck the
+engine can make.
 
-Or from the terminal:
+On top of that sits a **taste model trained on real star-ratings from a working
+DJ** — hundreds of patches rated by ear across seven families: deep subs,
+reese growls, leads, plucks, stabs, pads, and keys. That's what makes the
+garden's buds glow and the 🎲 random button deal you *good* hands instead of
+noise.
 
-```bash
-# clone a sound -> remake.wav + remake.wav.genome.txt (the 16 knob values)
-synfection match hook.wav
+## Built-in safety
 
-# play a genome at any note
-synfection render remake.wav.genome.txt --note F1 -o bass_f1.wav
+Sound design tools can screech. synfection can't: every patch, loop, and
+experiment is peak-limited, loudness-guarded, and de-clicked before it reaches
+your ears or your files. Turn the wildness up — the output stays civilized.
 
-# spawn 6 sibling sounds / breed two patches
-synfection vary remake.wav.genome.txt --n 6 --amount 0.15
-synfection breed a.genome.txt b.genome.txt
+## For the curious
 
-# tempo-locked seamless loop (patterns: synfection patterns)
-synfection loop remake.wav.genome.txt --key F1 --bpm 138 --pattern garage_roll
-
-# sanity-check the whole pipeline on a known patch
-synfection selftest
-```
-
-`match` auto-detects the pitch; override with `--note C2`. Feed it an **isolated,
-mono-ish hook** — a one-shot or a demucs `bass`/`other` stem works far better
-than a full mix. It matches single-note timbre, not chords or drums.
-
-## How it works
-
-The synth engine (2 wavetable oscillators, sub, noise, drive, resonant filter,
-ADSR envelopes — a 16-knob "genome") exists twice: once in differentiable
-PyTorch where the net was trained on **192,000 self-rendered sounds** (the
-engine labels its own data), and once in Rust for this binary. A compact CNN
-maps a log-mel spectrogram to the genome, then an evolutionary polish refines
-the match against a multi-scale spectral loss. The Rust port is verified
-sample-level against PyTorch in CI (`tests/parity.rs`).
-
-Training, the RLHF "does it actually sound good" loop, and the research notes
-live in [docs/LAB.md](docs/LAB.md) — that side needs Python + PyTorch.
+The same binary is a full command line tool (`synfection --help`): clone,
+render, breed, and batch-generate loops from scripts. The machine-learning lab
+that trains the models lives in [`lab/`](lab/) with its own
+[research notes](docs/LAB.md) — PyTorch training, the rating pipeline, and the
+export path that bakes the network into the app. The Rust engine is verified
+sample-for-sample against the PyTorch reference in CI.
 
 ## License
 
-MIT
+MIT — free to use, free to share.

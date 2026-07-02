@@ -1,7 +1,7 @@
 //! The synfection app: plant a sound, grow a patch.
 //! Preset browser · A/B · undo/redo · clone-from-wav · radial plant editor ·
 //! reward-scored garden · loop lab · gapless audio engine with live metering.
-//! Styled after the hardware mockup: dark bio-metal panels, glow accents.
+//! Hardware-inspired look: dark bio-metal panels, glow accents.
 
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -163,6 +163,7 @@ pub struct App {
     patch_name: String,
     user_patches: Vec<(String, std::path::PathBuf)>,
     user_sel: Option<String>,
+    show_help: bool,
     shot: Option<String>,
     frame: u64,
 }
@@ -229,6 +230,7 @@ impl App {
             patch_name: "my_patch".into(),
             user_patches: list_patches(),
             user_sel: None,
+            show_help: false,
             shot,
             frame: 0,
         };
@@ -482,7 +484,7 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
-/// Small labelled chip (the mockup's param tags).
+/// Small labelled chip for the plant's param tags.
 fn chip(p: &egui::Painter, pos: Pos2, text: &str, on: bool) {
     let galley = p.layout_no_wrap(
         text.to_string(),
@@ -584,7 +586,7 @@ fn plant(ui: &mut egui::Ui, g: &mut Genome, note: i32, size_hint: f32) -> bool {
     changed
 }
 
-/// Mockup-style slider: recessed groove, glowing fill, ridged metal thumb.
+/// Hardware-style slider: recessed groove, glowing fill, ridged metal thumb.
 fn param_slider_w(ui: &mut egui::Ui, v: &mut f32, width: f32) -> bool {
     let (resp, p) = ui.allocate_painter(Vec2::new(width, 18.0), Sense::click_and_drag());
     let rect = resp.rect;
@@ -654,7 +656,7 @@ fn fmt_real(x: f32) -> String {
     }
 }
 
-/// Rotary knob (drag vertically), mockup master style.
+/// Rotary knob (drag vertically) for the master volume.
 fn knob(ui: &mut egui::Ui, v: &mut f32, label: &str) -> bool {
     let size = 34.0;
     let (resp, p) = ui.allocate_painter(Vec2::new(size + 8.0, size + 14.0), Sense::click_and_drag());
@@ -769,6 +771,9 @@ impl eframe::App for App {
         if self.shot.is_some() && self.frame == 2 {
             self.grow_arch = 5; // "stab" — a fuller screenshot
             self.grow();
+            if self.shot.as_deref().map(|s| s.contains("help")).unwrap_or(false) {
+                self.show_help = true;
+            }
         }
 
         let mut msgs = Vec::new();
@@ -899,11 +904,6 @@ impl eframe::App for App {
                                 app.render_current();
                             }
                             value_box(ui, &format!("{:.0}%", app.unison * 100.0), app.unison > 0.01);
-                            ui.label(
-                                egui::RichText::new("4-voice detune spread · output is safety-limited")
-                                    .color(DIM)
-                                    .small(),
-                            );
                         });
                     });
                 };
@@ -1013,11 +1013,7 @@ impl eframe::App for App {
                             self.grow();
                         }
                         if !self.seedlings.is_empty() {
-                            ui.label(
-                                egui::RichText::new("buds glow by cue score — click to hear, ✓ adopts")
-                                    .color(DIM)
-                                    .small(),
-                            );
+                            ui.label(egui::RichText::new("click = hear · ✓ = keep").color(DIM).small());
                         }
                     });
                     if !self.seedlings.is_empty() {
@@ -1090,10 +1086,81 @@ impl eframe::App for App {
                     }
                 });
 
+                ui.add_space(40.0); // keep the ? button clear of content
+
                 }); // content column
                 }); // centering row
             });
         });
+
+        // floating help button, bottom-right
+        egui::Area::new(egui::Id::new("help_btn"))
+            .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-14.0, -14.0))
+            .show(ctx, |ui| {
+                let (resp, p) = ui.allocate_painter(Vec2::splat(30.0), Sense::click());
+                let c = resp.rect.center();
+                let hot = resp.hovered() || self.show_help;
+                glow(&p, c, 13.0, ACCENT, if hot { 0.8 } else { 0.3 });
+                p.circle_filled(c, 13.0, if hot { SEED } else { METAL });
+                p.circle_stroke(c, 13.0, Stroke::new(1.2, if hot { ACCENT } else { METAL_HI }));
+                p.text(c, Align2::CENTER_CENTER, "?", FontId::proportional(15.0), if hot { ACCENT_HOT } else { TEXT });
+                if resp.clicked() {
+                    self.show_help = !self.show_help;
+                }
+                resp.on_hover_text("how to use synfection");
+            });
+        if self.show_help {
+            let mut open = true;
+            egui::Window::new("how to use synfection")
+                .open(&mut open)
+                .collapsible(false)
+                .default_width(430.0)
+                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().max_height(430.0).show(ui, |ui| {
+                        let section = |ui: &mut egui::Ui, title: &str, lines: &[&str]| {
+                            ui.label(egui::RichText::new(title).color(ACCENT).strong());
+                            for l in lines {
+                                ui.label(egui::RichText::new(format!("•  {l}")).size(12.5));
+                            }
+                            ui.add_space(8.0);
+                        };
+                        section(ui, "GET A SOUND", &[
+                            "Pick a preset from the dropdown up top and press ▶ play.",
+                            "Or drop any .wav onto the window (or ⬆ open wav) — synfection listens and rebuilds it as a patch you can play at any note.",
+                            "🎲 random deals you a fresh sound, ranked by the taste model.",
+                        ]);
+                        section(ui, "SHAPE IT", &[
+                            "Drag the plant's branches — longer branch = more of that ingredient. The sliders do the same with fine control.",
+                            "unison makes it thicker and wider. − / + moves the note.",
+                            "A/B flips between two versions. ↶ ↷ are undo and redo (ctrl+z / ctrl+y).",
+                            "cue % is the taste model's guess at how good the patch sounds.",
+                        ]);
+                        section(ui, "GROW IT", &[
+                            "In the garden, pick a seed — this patch, or a style (bass, reese, stab, pad...).",
+                            "Press 🌱 grow: eight buds appear. Brighter glow = the taste model likes it more.",
+                            "Click a bud to hear it. Press ✓ to keep it — the next generation grows from your pick. Repeat until it's yours.",
+                            "wildness controls how different the children are.",
+                        ]);
+                        section(ui, "MAKE LOOPS", &[
+                            "loop lab plays your patch as a bassline groove — pick a pattern, bpm and key.",
+                            "swing adds shuffle. ▶ loop plays seamlessly until ⏹ stop.",
+                            "💾 save loop writes a 44.1 kHz .wav next to the app.",
+                        ]);
+                        section(ui, "KEEP IT", &[
+                            "Type a name and press 💾 save — patches live in Documents/synfection/patches.",
+                            "They appear under YOUR PATCHES in the dropdown, every time you open the app.",
+                        ]);
+                        section(ui, "SAFETY", &[
+                            "Everything you hear or save runs through a built-in limiter and loudness guard.",
+                            "Random experiments can't clip, blast, or hurt your ears — go wild.",
+                        ]);
+                    });
+                });
+            if !open {
+                self.show_help = false;
+            }
+        }
 
         if let Some(path) = self.shot.clone() {
             if self.frame == 8 {
@@ -1193,23 +1260,13 @@ impl App {
                 }
             }
 
-            if ui.button("🎲 random").on_hover_text("best of 12 random patches, reward-ranked").clicked() {
+            if ui.button("🎲 random").on_hover_text("surprise me — best of 12, taste-ranked").clicked() {
                 let mut rng = SmallRng::seed_from_u64(self.frame);
                 if let Some(g) = garden::lucky_dip(&self.net, self.note, 12, &mut rng) {
                     self.preset_idx = None;
                     let note = self.note;
                     self.set_patch(g, note, true);
                 }
-            }
-            if ui.button("🎲 mutate").clicked() {
-                let mut rng = SmallRng::seed_from_u64(self.frame);
-                let mut g = self.genome;
-                for v in g.iter_mut() {
-                    *v = (*v + matcher::gaussian(&mut rng) * 0.12).clamp(0.0, 1.0);
-                }
-                self.preset_idx = None;
-                let note = self.note;
-                self.set_patch(g, note, true);
             }
             if ui.button("⬆ open wav").clicked() {
                 if let Some(path) = rfd::FileDialog::new().add_filter("wav", &["wav"]).pick_file() {
