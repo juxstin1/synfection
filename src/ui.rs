@@ -246,6 +246,45 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
+/// A genome slider in the plant's visual language: the track fills dim -> green
+/// with the value, the handle is a branch tip that glows on hover.
+fn param_slider(ui: &mut egui::Ui, v: &mut f32) -> bool {
+    let (resp, p) = ui.allocate_painter(Vec2::new(132.0, 16.0), Sense::click_and_drag());
+    let rect = resp.rect;
+    let pad = 6.0;
+    let (x0, x1) = (rect.left() + pad, rect.right() - pad);
+    let y = rect.center().y;
+    let mut changed = false;
+    if resp.dragged() || resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            *v = ((pos.x - x0) / (x1 - x0)).clamp(0.0, 1.0);
+            changed = true;
+        }
+    }
+    let hot = resp.hovered() || resp.dragged();
+    let col = lerp_color(DIM, if hot { ACCENT_HOT } else { ACCENT }, *v);
+    let hx = x0 + *v * (x1 - x0);
+    // rail + fill
+    p.line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], Stroke::new(2.0, SEED));
+    p.line_segment([Pos2::new(x0, y), Pos2::new(hx, y)], Stroke::new(2.0, col));
+    // branch-tip handle
+    let r = if hot { 5.5 } else { 4.5 };
+    p.circle_filled(Pos2::new(hx, y), r, col);
+    p.circle_filled(Pos2::new(hx, y), r * 0.4, Color32::from_rgb(8, 12, 9));
+    changed
+}
+
+/// Compact real-value readout for a param row (Hz, cents, seconds...).
+fn fmt_real(x: f32) -> String {
+    if x.abs() >= 100.0 {
+        format!("{x:.0}")
+    } else if x.abs() >= 10.0 {
+        format!("{x:.1}")
+    } else {
+        format!("{x:.2}")
+    }
+}
+
 fn waveform(ui: &mut egui::Ui, audio: &[f32], color: Color32) {
     let w = ui.available_width();
     let (resp, p) = ui.allocate_painter(Vec2::new(w, 56.0), Sense::hover());
@@ -381,12 +420,17 @@ impl eframe::App for App {
                     ui.set_width(300.0);
                     ui.label(egui::RichText::new("genome").color(DIM).small());
                     let mut changed = false;
-                    egui::Grid::new("params").num_columns(2).spacing([8.0, 2.0]).show(ui, |ui| {
+                    let reals = genome::denorm(&self.genome);
+                    egui::Grid::new("params").num_columns(3).spacing([8.0, 3.0]).show(ui, |ui| {
                         for i in 0..N_PARAMS {
                             ui.label(egui::RichText::new(PARAMS[i].0).monospace().size(11.0));
-                            changed |= ui
-                                .add(egui::Slider::new(&mut self.genome[i], 0.0..=1.0).show_value(false))
-                                .changed();
+                            changed |= param_slider(ui, &mut self.genome[i]);
+                            ui.label(
+                                egui::RichText::new(fmt_real(reals[i]))
+                                    .monospace()
+                                    .size(10.0)
+                                    .color(if self.genome[i] > 0.02 { TEXT } else { DIM }),
+                            );
                             ui.end_row();
                         }
                     });
