@@ -54,20 +54,46 @@ pub fn upgrade(vals: &[f32]) -> Result<Genome> {
 }
 
 /// Genome from a file of whitespace-separated floats, or an inline "0.2,0.8,..." string.
+/// Lines starting with '#' are comments (numpy-compatible).
 pub fn load(spec: &str) -> Result<Genome> {
+    Ok(load_with_note(spec)?.0)
+}
+
+/// Like `load`, but also returns the note stored in a `# note=NN` comment if present.
+pub fn load_with_note(spec: &str) -> Result<(Genome, Option<i32>)> {
     let text = match std::fs::read_to_string(spec) {
         Ok(t) => t,
         Err(_) => spec.replace(',', " "),
     };
-    let vals: Vec<f32> = text
-        .split_whitespace()
-        .map(|s| s.parse::<f32>().with_context(|| format!("bad genome value {s:?}")))
-        .collect::<Result<_>>()?;
-    upgrade(&vals)
+    let mut note = None;
+    let mut vals = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix('#') {
+            if let Some(n) = rest.split("note=").nth(1) {
+                note = n.trim().parse::<i32>().ok();
+            }
+            continue;
+        }
+        for tok in line.split(|c: char| c.is_whitespace() || c == ',') {
+            if !tok.is_empty() {
+                vals.push(tok.parse::<f32>().with_context(|| format!("bad genome value {tok:?}"))?);
+            }
+        }
+    }
+    Ok((upgrade(&vals)?, note))
 }
 
 pub fn save(path: &str, g: &Genome) -> Result<()> {
     let text: String = g.iter().map(|x| format!("{x:.5}\n")).collect();
+    std::fs::write(path, text)?;
+    Ok(())
+}
+
+/// Save a patch with its note (readable by numpy, the CLI, and the app).
+pub fn save_patch(path: &std::path::Path, g: &Genome, note: i32) -> Result<()> {
+    let mut text = format!("# synfection patch  note={note}\n");
+    text.extend(g.iter().map(|x| format!("{x:.5}\n")));
     std::fs::write(path, text)?;
     Ok(())
 }

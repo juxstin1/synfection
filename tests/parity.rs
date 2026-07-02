@@ -138,6 +138,21 @@ fn archetype_seeds_are_mostly_alive() {
 }
 
 #[test]
+fn patch_roundtrip_with_note() {
+    let dir = std::env::temp_dir().join("synfection_test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("roundtrip.genome.txt");
+    let mut g = [0.0f32; genome::N_PARAMS];
+    g.iter_mut().enumerate().for_each(|(i, v)| *v = i as f32 / 16.0);
+    genome::save_patch(&p, &g, 41).unwrap();
+    let (g2, note) = genome::load_with_note(&p.to_string_lossy()).unwrap();
+    assert_eq!(note, Some(41));
+    for (a, b) in g.iter().zip(&g2) {
+        assert!((a - b).abs() < 1e-4);
+    }
+}
+
+#[test]
 fn note_parsing() {
     assert_eq!(genome::note_to_midi("C3").unwrap(), 48);
     assert_eq!(genome::note_to_midi("F1").unwrap(), 29);
