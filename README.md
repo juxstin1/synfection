@@ -35,9 +35,22 @@ cargo install --git https://github.com/juxstin1/synfection
 ## Use it
 
 **Double-click the binary** (or run `synfection` with no arguments) to open the
-UI: drop a `.wav` on the window and it clones the sound. The genome is a plant —
-drag the 16 branches to garden the patch by hand, mutate it, play it at any
-note, and render UK-garage / bass-house loops from it in the loop lab.
+app:
+
+- **Clone**: drop a `.wav` on the window (or hit *open wav*) and the net grows a
+  patch that recreates it, with live progress.
+- **Presets**: 12 factory patches — garage stabs, an Innerbloom-style long stab,
+  organ stab, reese, acid, deep sub, plucks, pads — browse with ◀ ▶.
+- **Garden**: grow 8 offspring from the current patch (or from bass / reese /
+  stab / pad... archetype seeds), each **scored by a reward model trained on
+  real star-ratings**. Click a bud to hear it, ✓ to adopt it as the new seed and
+  grow the next generation — Synplant-style breed-to-taste.
+- **Plant**: drag the 16 branches to garden the patch by hand; precise sliders
+  with real values (Hz / cents / seconds) on the right.
+- **Loop lab**: 12 UK-garage / bass-house / DnB patterns with swing — loops play
+  gapless until you stop them, and save as 44.1k wavs.
+- Plus A/B compare, undo/redo (ctrl+z/y), reward-ranked *random*, and a master
+  volume.
 
 Or from the terminal:
 

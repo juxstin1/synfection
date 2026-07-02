@@ -8,10 +8,16 @@ use serde_json::Value;
 
 #[path = "../src/dsp.rs"]
 mod dsp;
+#[path = "../src/garden.rs"]
+mod garden;
 #[path = "../src/genome.rs"]
 mod genome;
+#[path = "../src/matcher.rs"]
+mod matcher;
 #[path = "../src/net.rs"]
 mod net;
+#[path = "../src/presets.rs"]
+mod presets;
 #[path = "../src/synth.rs"]
 mod synth;
 
@@ -101,6 +107,34 @@ fn legacy_genome_upgrades() {
     assert_eq!(g[5], 0.5);
     assert_eq!(g[7], 0.5);
     assert!(genome::upgrade(&[0.5f32; 10]).is_err());
+}
+
+#[test]
+fn presets_are_alive_and_scored() {
+    let net = net::Net::load().unwrap();
+    let mut rng = SmallRng::seed_from_u64(1);
+    for p in presets::PRESETS.iter() {
+        let a = synth::render_default(&p.genome, p.note as f32, &mut rng);
+        assert!(!garden::is_dud(&a), "preset {:?} renders as a dud", p.name);
+        let s = net.reward(&p.genome).expect("reward model missing from weights bundle");
+        assert!((0.0..=1.0).contains(&s), "preset {:?} score {s}", p.name);
+    }
+}
+
+#[test]
+fn archetype_seeds_are_mostly_alive() {
+    let mut rng = SmallRng::seed_from_u64(2);
+    for arch in garden::ARCHETYPE_NAMES {
+        let mut alive = 0;
+        for _ in 0..6 {
+            let g = garden::sample_archetype(arch, &mut rng);
+            let a = synth::render_default(&g, garden::home_note(arch) as f32, &mut rng);
+            if !garden::is_dud(&a) {
+                alive += 1;
+            }
+        }
+        assert!(alive >= 4, "archetype {arch}: only {alive}/6 samples audible");
+    }
 }
 
 #[test]

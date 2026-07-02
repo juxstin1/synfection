@@ -64,6 +64,20 @@ impl Net {
         self.get("melfb")
     }
 
+    /// RLHF reward model: genome -> predicted "sounds good" in [0,1].
+    /// None if the weights bundle was exported without a reward model.
+    pub fn reward(&self, g: &Genome) -> Option<f32> {
+        let (w1, b1) = (self.t.get("rw1")?, self.t.get("rb1")?);
+        let (w2, b2) = (self.t.get("rw2")?, self.t.get("rb2")?);
+        let (w3, b3) = (self.t.get("rw3")?, self.t.get("rb3")?);
+        let mut x = linear(g.as_slice(), w1, b1);
+        gelu(&mut x);
+        let mut x = linear(&x, w2, b2);
+        gelu(&mut x);
+        let y = linear(&x, w3, b3)[0];
+        Some(1.0 / (1.0 + (-y).exp()))
+    }
+
     /// mel: [n_mels * frames] row-major (mel, frame) -> genome in [0,1].
     pub fn forward(&self, mel: &[f32], h: usize, w: usize) -> Result<Genome> {
         let mut x = mel.to_vec();

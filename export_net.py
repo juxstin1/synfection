@@ -68,6 +68,14 @@ def main():
     fb = librosa.filters.mel(sr=SR, n_fft=1024, n_mels=N_MELS)
     tensors.append(("melfb", torch.tensor(fb)))
 
+    # bundle the RLHF reward model (genome -> predicted quality) if present
+    if os.path.exists("reward.pt"):
+        rsd = torch.load("reward.pt", map_location="cpu")["state_dict"]
+        tensors += [("rw1", rsd["net.0.weight"]), ("rb1", rsd["net.0.bias"]),
+                    ("rw2", rsd["net.3.weight"]), ("rb2", rsd["net.3.bias"]),
+                    ("rw3", rsd["net.6.weight"]), ("rb3", rsd["net.6.bias"])]
+        print("bundled reward model from reward.pt")
+
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     with open(a.out, "wb") as f:
         f.write(b"SYNF")

@@ -2,10 +2,12 @@
 //! Single binary: the trained net is embedded, no Python or model files needed.
 
 mod dsp;
+mod garden;
 mod genome;
 mod loops;
 mod matcher;
 mod net;
+mod presets;
 mod synth;
 mod ui;
 mod wavio;

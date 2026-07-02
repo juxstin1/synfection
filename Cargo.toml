@@ -16,6 +16,7 @@ libm = "0.2"
 rand = { version = "0.8", features = ["small_rng"] }
 rayon = "1.8"
 realfft = "3"
+rfd = "0.15"
 rodio = { version = "0.19", default-features = false }
 
 [dev-dependencies]
