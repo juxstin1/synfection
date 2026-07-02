@@ -21,7 +21,7 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from synth import render
+from synth import render, upgrade_genome
 from match import note_to_midi
 
 SR_OUT = 44100
@@ -44,16 +44,41 @@ PATTERNS = {
     # 4-to-floor root pulse — every beat, tight gate (bass house)
     "four_pulse": [(0, 2), None, None, None,       (0, 2), None, None, None,
                    (0, 2), None, None, None,        (0, 2), None, None, None],
+    # relentless speed-garage roller — near-constant 8ths, octave/fifth flicks
+    "speed_run": [(0, 1), None, (0, 1), None,      (12, 1), None, (0, 1), (7, 1),
+                  (0, 1), None, (10, 1), None,      (12, 1), (0, 1), (7, 1), (5, 1)],
+    # 2-step skip with octave pops on the off-16ths
+    "garage_bounce": [(0, 2), None, None, (12, 1, 0.7),  None, None, (0, 1), None,
+                      (0, 2), None, (10, 1, 0.6), None,   (12, 1), None, None, (0, 1)],
+    # niche / bassline octave seesaw — root vs ghosted octave every 16th
+    "bassline_seesaw": [(0, 1), (12, 1, 0.55), (0, 1), (12, 1, 0.55),
+                        (0, 1), (12, 1, 0.55), (3, 1), (12, 1, 0.55),
+                        (0, 1), (12, 1, 0.55), (0, 1), (12, 1, 0.55),
+                        (5, 1), (12, 1, 0.55), (7, 1), (10, 1, 0.6)],
+    # speed-garage organ bass — offbeat octave hops with fifth/b7 turns
+    "organ_hop": [None, (12, 1), None, (0, 1),     None, (12, 1, 0.8), None, (7, 1),
+                  None, (12, 1), None, (0, 1),      (5, 1), None, (7, 1), (10, 1, 0.8)],
+    # classic UKG skip with ghost notes for shuffle feel
+    "skippy_ghost": [(0, 2), None, (0, 1, 0.45), None,   None, (0, 1), None, (0, 1, 0.5),
+                     None, (0, 2), None, (0, 1, 0.45),    (10, 1, 0.7), None, (0, 1), None],
+    # half-bar growl holds with a minor walk-up turnaround
+    "wobble_hold": [(0, 6), None, None, None,      None, None, (0, 2, 0.8), None,
+                    (3, 4), None, None, None,       (5, 1), None, (7, 1), (10, 1)],
+    # 174-friendly roller — syncopated, octave flick mid-bar
+    "dnb_roller": [(0, 2), None, None, (0, 1),     None, None, (12, 1, 0.7), None,
+                   None, (0, 2), None, None,        (0, 1), None, (7, 1, 0.7), (10, 1, 0.7)],
 }
 
 
-def render_loop(genome, root_midi, bpm, pattern, bars=2, sr=SR_OUT, dev="cpu"):
-    """Mono bass loop -> float32 np audio, seamless (release tails wrap the loop)."""
+def render_loop(genome, root_midi, bpm, pattern, bars=2, swing=0.0, sr=SR_OUT, dev="cpu"):
+    """Mono bass loop -> float32 np audio, seamless (release tails wrap the loop).
+    swing pushes every odd 16th late by that fraction of a step (~0.12 = garage)."""
     step = 60.0 / bpm / 4.0                      # seconds per 16th note
     step_n = int(round(step * sr))
     loop_n = step_n * 16 * bars
     buf = np.zeros(loop_n, dtype=np.float32)
     tail = int(0.30 * sr)                        # room for release/decay
+    swing_n = int(max(0.0, min(swing, 0.5)) * step_n)
     for bar in range(bars):
         for i, slot in enumerate(pattern):
             if slot is None:
@@ -65,7 +90,7 @@ def render_loop(genome, root_midi, bpm, pattern, bars=2, sr=SR_OUT, dev="cpu"):
             n = gate_n + tail
             note_dur = gate_n / sr
             a = render(genome, midi, sr=sr, n=n, note_dur=note_dur).cpu().numpy() * gain
-            pos = (bar * 16 + i) * step_n
+            pos = (bar * 16 + i) * step_n + (swing_n if i % 2 == 1 else 0)
             end = pos + len(a)
             if end <= loop_n:                    # fits
                 buf[pos:end] += a
@@ -83,7 +108,7 @@ def load_genome(spec, dev):
         g = np.loadtxt(spec).astype(np.float32)
     else:
         g = np.array([float(x) for x in spec.split(",")], dtype=np.float32)
-    return torch.tensor(g, device=dev)
+    return torch.tensor(upgrade_genome(g), device=dev)
 
 
 def main():
@@ -92,6 +117,8 @@ def main():
     ap.add_argument("--key", default="F1", help="root note, e.g. F1 / 33")
     ap.add_argument("--bpm", type=float, default=138)
     ap.add_argument("--pattern", default="garage_roll", choices=list(PATTERNS))
+    ap.add_argument("--swing", type=float, default=0.0,
+                    help="push odd 16ths late: 0 straight, ~0.12 garage shuffle")
     ap.add_argument("--bars", type=int, default=2)
     ap.add_argument("--out", default="loop.wav")
     # pack mode
@@ -107,7 +134,7 @@ def main():
     if not a.pack:
         g = load_genome(a.genome, dev)
         audio = render_loop(g, note_to_midi(a.key), a.bpm, PATTERNS[a.pattern],
-                            a.bars, dev=dev)
+                            a.bars, swing=a.swing, dev=dev)
         sf.write(a.out, audio, SR_OUT)
         print(f"loop -> {a.out}  ({a.key} {a.bpm:.0f}bpm {a.pattern} {a.bars}bar 44.1k)")
         return
@@ -125,7 +152,7 @@ def main():
             for key in keys:
                 for pat in pats:
                     audio = render_loop(g, note_to_midi(key), bpm, PATTERNS[pat],
-                                        a.bars, dev=dev)
+                                        a.bars, swing=a.swing, dev=dev)
                     name = f"{snd}_{int(bpm)}bpm_{key}_{pat}.wav"
                     sf.write(os.path.join(a.dir, name), audio, SR_OUT)
                     n += 1

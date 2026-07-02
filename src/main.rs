@@ -100,6 +100,9 @@ enum Cmd {
         /// see `synfection patterns`
         #[arg(long, default_value = "garage_roll")]
         pattern: String,
+        /// push odd 16ths late: 0 straight, ~0.12 garage shuffle
+        #[arg(long, default_value_t = 0.0)]
+        swing: f32,
         #[arg(long, default_value_t = 2)]
         bars: usize,
         #[arg(short, long, default_value = "loop.wav")]
@@ -159,13 +162,13 @@ fn main() -> Result<()> {
         Cmd::Breed { a, b, n, amount, note, dir, seed } => {
             cmd_breed(&a, &b, n, amount, &note, &dir, seed)
         }
-        Cmd::Loop { genome, key, bpm, pattern, bars, out, seed } => {
+        Cmd::Loop { genome, key, bpm, pattern, swing, bars, out, seed } => {
             let g = genome::load(&genome)?;
             let root = genome::note_to_midi(&key)?;
             let pat = loops::pattern(&pattern)
                 .with_context(|| format!("unknown pattern {pattern:?} (see `synfection patterns`)"))?;
             let mut rng = SmallRng::seed_from_u64(seed);
-            let audio = loops::render_loop(&g, root, bpm, &pat, bars, &mut rng);
+            let audio = loops::render_loop(&g, root, bpm, &pat, bars, swing, &mut rng);
             write_wav(&out, &audio, loops::SR_OUT)?;
             println!("loop -> {out}  ({key} {bpm:.0}bpm {pattern} {bars}bar 44.1k)");
             Ok(())

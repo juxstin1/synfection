@@ -45,6 +45,7 @@ pub struct App {
     bpm: f32,
     key: String,
     pattern_idx: usize,
+    swing: f32,
     // screenshot mode
     shot: Option<String>,
     frame: u64,
@@ -76,6 +77,7 @@ impl App {
             bpm: 138.0,
             key: "F1".into(),
             pattern_idx: 0,
+            swing: 0.12,
             shot,
             frame: 0,
         };
@@ -452,11 +454,21 @@ impl eframe::App for App {
                         ui.add(egui::TextEdit::singleline(&mut self.key).desired_width(34.0));
                     });
                     ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("swing").color(DIM).small());
+                        param_slider(ui, &mut self.swing);
+                        ui.label(
+                            egui::RichText::new(format!("{:.0}%", self.swing * 100.0))
+                                .monospace()
+                                .size(10.0)
+                                .color(TEXT),
+                        );
+                    });
+                    ui.horizontal(|ui| {
                         if ui.button("▶ loop").clicked() {
                             if let Ok(root) = genome::note_to_midi(&self.key) {
                                 let pat = loops::pattern(loops::PATTERN_NAMES[self.pattern_idx]).unwrap();
                                 let mut rng = SmallRng::seed_from_u64(0);
-                                let audio = loops::render_loop(&self.genome, root, self.bpm, &pat, 2, &mut rng);
+                                let audio = loops::render_loop(&self.genome, root, self.bpm, &pat, 2, self.swing, &mut rng);
                                 self.play(&audio, loops::SR_OUT);
                                 self.last_audio = audio;
                                 self.last_sr = loops::SR_OUT;
@@ -468,7 +480,7 @@ impl eframe::App for App {
                             if let Ok(root) = genome::note_to_midi(&self.key) {
                                 let pat = loops::pattern(loops::PATTERN_NAMES[self.pattern_idx]).unwrap();
                                 let mut rng = SmallRng::seed_from_u64(0);
-                                let audio = loops::render_loop(&self.genome, root, self.bpm, &pat, 2, &mut rng);
+                                let audio = loops::render_loop(&self.genome, root, self.bpm, &pat, 2, self.swing, &mut rng);
                                 let name = format!("loop_{}bpm_{}.wav", self.bpm as u32, self.key);
                                 let _ = wavio::write_wav(&name, &audio, loops::SR_OUT);
                                 self.status = format!("saved {name}");

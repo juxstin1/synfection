@@ -10,12 +10,19 @@ pub const SR_OUT: f32 = 44100.0;
 /// A pattern is 16 sixteenth-steps: None = rest, Some((semitones, gate_steps, gain)).
 pub type Pattern = [Option<(i32, usize, f32)>; 16];
 
-pub const PATTERN_NAMES: [&str; 5] = [
+pub const PATTERN_NAMES: [&str; 12] = [
     "garage_roll",
-    "house_offbeat",
-    "reese_hold",
     "speed_walk",
     "four_pulse",
+    "speed_run",
+    "garage_bounce",
+    "bassline_seesaw",
+    "organ_hop",
+    "skippy_ghost",
+    "wobble_hold",
+    "dnb_roller",
+    "house_offbeat",
+    "reese_hold",
 ];
 
 pub fn pattern(name: &str) -> Option<Pattern> {
@@ -56,18 +63,70 @@ pub fn pattern(name: &str) -> Option<Pattern> {
             Some((0, 2, G)), None, None, None,
             Some((0, 2, G)), None, None, None,
         ],
+        // relentless speed-garage roller — near-constant 8ths, octave/fifth flicks
+        "speed_run" => [
+            Some((0, 1, G)), None, Some((0, 1, G)), None,
+            Some((12, 1, G)), None, Some((0, 1, G)), Some((7, 1, G)),
+            Some((0, 1, G)), None, Some((10, 1, G)), None,
+            Some((12, 1, G)), Some((0, 1, G)), Some((7, 1, G)), Some((5, 1, G)),
+        ],
+        // 2-step skip with octave pops on the off-16ths
+        "garage_bounce" => [
+            Some((0, 2, G)), None, None, Some((12, 1, 0.7)),
+            None, None, Some((0, 1, G)), None,
+            Some((0, 2, G)), None, Some((10, 1, 0.6)), None,
+            Some((12, 1, G)), None, None, Some((0, 1, G)),
+        ],
+        // niche / bassline octave seesaw — root vs ghosted octave every 16th
+        "bassline_seesaw" => [
+            Some((0, 1, G)), Some((12, 1, 0.55)), Some((0, 1, G)), Some((12, 1, 0.55)),
+            Some((0, 1, G)), Some((12, 1, 0.55)), Some((3, 1, G)), Some((12, 1, 0.55)),
+            Some((0, 1, G)), Some((12, 1, 0.55)), Some((0, 1, G)), Some((12, 1, 0.55)),
+            Some((5, 1, G)), Some((12, 1, 0.55)), Some((7, 1, G)), Some((10, 1, 0.6)),
+        ],
+        // speed-garage organ bass — offbeat octave hops with fifth/b7 turns
+        "organ_hop" => [
+            None, Some((12, 1, G)), None, Some((0, 1, G)),
+            None, Some((12, 1, 0.8)), None, Some((7, 1, G)),
+            None, Some((12, 1, G)), None, Some((0, 1, G)),
+            Some((5, 1, G)), None, Some((7, 1, G)), Some((10, 1, 0.8)),
+        ],
+        // classic UKG skip with ghost notes for shuffle feel
+        "skippy_ghost" => [
+            Some((0, 2, G)), None, Some((0, 1, 0.45)), None,
+            None, Some((0, 1, G)), None, Some((0, 1, 0.5)),
+            None, Some((0, 2, G)), None, Some((0, 1, 0.45)),
+            Some((10, 1, 0.7)), None, Some((0, 1, G)), None,
+        ],
+        // half-bar growl holds with a minor walk-up turnaround
+        "wobble_hold" => [
+            Some((0, 6, G)), None, None, None,
+            None, None, Some((0, 2, 0.8)), None,
+            Some((3, 4, G)), None, None, None,
+            Some((5, 1, G)), None, Some((7, 1, G)), Some((10, 1, G)),
+        ],
+        // 174-friendly roller — syncopated, octave flick mid-bar
+        "dnb_roller" => [
+            Some((0, 2, G)), None, None, Some((0, 1, G)),
+            None, None, Some((12, 1, 0.7)), None,
+            None, Some((0, 2, G)), None, None,
+            Some((0, 1, G)), None, Some((7, 1, 0.7)), Some((10, 1, 0.7)),
+        ],
         _ => return None,
     };
     Some(p)
 }
 
 /// Mono bass loop, seamless (release tails wrap to the head). 44.1k output.
+/// `swing` pushes every odd 16th late by that fraction of a step (0 = straight,
+/// ~0.12 = garage shuffle, 0.3 = drunk).
 pub fn render_loop(
     g: &Genome,
     root_midi: i32,
     bpm: f32,
     pat: &Pattern,
     bars: usize,
+    swing: f32,
     rng: &mut SmallRng,
 ) -> Vec<f32> {
     let sr = SR_OUT;
@@ -76,6 +135,7 @@ pub fn render_loop(
     let loop_n = step_n * 16 * bars;
     let mut buf = vec![0.0f32; loop_n];
     let tail = (0.30 * sr) as usize;
+    let swing_n = (swing.clamp(0.0, 0.5) * step_n as f32) as usize;
     for bar in 0..bars {
         for (i, slot) in pat.iter().enumerate() {
             let Some((offset, gate, gain)) = slot else { continue };
@@ -84,7 +144,7 @@ pub fn render_loop(
             let n = gate_n + tail;
             let note_dur = gate_n as f32 / sr;
             let a = render(g, midi as f32, sr, n, note_dur, rng);
-            let pos = (bar * 16 + i) * step_n;
+            let pos = (bar * 16 + i) * step_n + if i % 2 == 1 { swing_n } else { 0 };
             for (j, v) in a.iter().enumerate() {
                 buf[(pos + j) % loop_n] += v * gain;
             }
