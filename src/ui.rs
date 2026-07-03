@@ -17,6 +17,7 @@ use crate::garden::{self, Seedling};
 use crate::genome::{self, Genome, N_PARAMS, PARAMS};
 use crate::loops;
 use crate::matcher;
+use crate::midiio;
 use crate::net::Net;
 use crate::presets::PRESETS;
 use crate::synth;
@@ -101,6 +102,16 @@ impl AudioEngine {
             && self.sink.as_ref().map(|s| !s.empty()).unwrap_or(false)
     }
 
+    /// How far through the current loop we are, [0,1) — for phase-preserving swaps.
+    fn loop_pos_frac(&self) -> f32 {
+        let Some(p) = &self.playing else { return 0.0 };
+        if !p.looping || p.samples.is_empty() || !self.is_playing() {
+            return 0.0;
+        }
+        let idx = (p.start.elapsed().as_secs_f32() * p.sr) as usize % p.samples.len();
+        idx as f32 / p.samples.len() as f32
+    }
+
     fn is_playing(&self) -> bool {
         self.sink.as_ref().map(|s| !s.empty()).unwrap_or(false)
     }
@@ -164,8 +175,25 @@ pub struct App {
     user_patches: Vec<(String, std::path::PathBuf)>,
     user_sel: Option<String>,
     show_help: bool,
+    show_keys: bool,
     shot: Option<String>,
     frame: u64,
+    // fit-to-screen: content height measured last frame (points), one-shot monitor clamp
+    content_h: f32,
+    fitted_to_monitor: bool,
+    // render worker (cold path): jobs out, results in
+    job_tx: mpsc::Sender<Job>,
+    out_rx: mpsc::Receiver<Out>,
+    busy: bool,
+    cue: f32,
+    /// What `last_audio` currently holds — lets play skip the render entirely.
+    rendered_key: Option<PatchKey>,
+    /// What the playing (or requested) loop was rendered from.
+    last_loop_sig: Option<LoopSig>,
+    // imported MIDI groove for the loop lab
+    groove: Option<midiio::Groove>,
+    use_groove: bool,
+    groove_gen: u64,
 }
 
 /// Documents/synfection/patches (or ~/synfection/patches) — the user's library.
@@ -202,6 +230,14 @@ impl App {
             Some(g) => (g, 36, None),
             None => (PRESETS[0].genome, PRESETS[0].note, Some(0)),
         };
+        let cue = garden::score(&net, &genome);
+        let (job_tx, job_rx) = mpsc::channel();
+        let (out_tx, out_rx) = mpsc::channel();
+        {
+            let net = net.clone();
+            let ctx = cc.egui_ctx.clone();
+            std::thread::spawn(move || worker_thread(net, job_rx, out_tx, ctx));
+        }
         let mut app = App {
             net,
             genome,
@@ -231,25 +267,59 @@ impl App {
             user_patches: list_patches(),
             user_sel: None,
             show_help: false,
+            show_keys: false,
             shot,
             frame: 0,
+            content_h: 1010.0,
+            fitted_to_monitor: false,
+            job_tx,
+            out_rx,
+            busy: false,
+            cue,
+            rendered_key: None,
+            last_loop_sig: None,
+            groove: None,
+            use_groove: false,
+            groove_gen: 0,
         };
-        app.render_current();
+        app.request_patch(false);
         app
     }
 
-    /// Unison thickener + output safety — everything heard or saved goes through this.
-    fn post(&self, audio: Vec<f32>, sr: f32, looped: bool) -> Vec<f32> {
-        let mut a = crate::dsp::thicken(&audio, sr, self.unison);
-        crate::dsp::safety(&mut a, sr, looped);
-        a
+    fn patch_key(&self) -> PatchKey {
+        (self.genome, self.note, self.unison.to_bits())
     }
 
-    fn render_current(&mut self) {
+    fn send_job(&mut self, job: Job) {
+        self.busy = true;
+        let _ = self.job_tx.send(job);
+    }
+
+    /// Synchronous render — screenshot mode only (needs deterministic frames).
+    fn render_now(&mut self) {
         let mut rng = SmallRng::seed_from_u64(0);
         let raw = synth::render_default(&self.genome, self.note as f32, &mut rng);
-        self.last_audio = self.post(raw, synth::SR, false);
+        self.last_audio = post_dsp(raw, synth::SR, self.unison, false);
         self.last_sr = synth::SR;
+        self.rendered_key = Some(self.patch_key());
+        self.cue = garden::score(&self.net, &self.genome);
+    }
+
+    /// Hot path: if the current patch is already rendered, play is instant.
+    /// Otherwise hand the render to the worker (cold path).
+    fn request_patch(&mut self, play: bool) {
+        if self.shot.is_some() {
+            self.render_now();
+            if play {
+                self.audio.play(&self.last_audio, self.last_sr, false);
+            }
+            return;
+        }
+        if play && self.rendered_key == Some(self.patch_key()) {
+            self.audio.play(&self.last_audio, self.last_sr, false);
+            return;
+        }
+        self.send_job(Job::Patch { genome: self.genome, note: self.note, unison: self.unison, play });
     }
 
     fn checkpoint(&mut self) {
@@ -264,18 +334,152 @@ impl App {
         self.checkpoint();
         self.genome = g;
         self.note = note;
-        self.render_current();
-        if play {
-            self.audio.play(&self.last_audio, self.last_sr, false);
-        }
+        self.request_patch(play);
     }
 
     fn play_patch(&mut self) {
-        self.render_current();
-        self.audio.play(&self.last_audio, self.last_sr, false);
+        self.request_patch(true);
+    }
+
+    fn toggle_play(&mut self) {
+        if self.audio.is_playing() {
+            self.audio.stop();
+        } else {
+            self.play_patch();
+        }
+    }
+
+    fn nudge_note(&mut self, d: i32) {
+        self.note = (self.note + d).clamp(12, 96);
+        self.request_patch(false);
+    }
+
+    fn step_preset(&mut self, dir: i32) {
+        let n = PRESETS.len() as i32;
+        let i = self.preset_idx.map(|i| (i as i32 + dir).rem_euclid(n) as usize).unwrap_or(0);
+        self.load_preset(i);
+    }
+
+    fn swap_ab(&mut self) {
+        std::mem::swap(&mut self.genome, &mut self.ab_other.0);
+        std::mem::swap(&mut self.note, &mut self.ab_other.1);
+        self.ab_is_b = !self.ab_is_b;
+        self.request_patch(true);
+    }
+
+    fn do_undo(&mut self) {
+        if let Some((g, n)) = self.undo.pop() {
+            self.redo.push((self.genome, self.note));
+            self.genome = g;
+            self.note = n;
+            self.request_patch(false);
+        }
+    }
+
+    fn do_redo(&mut self) {
+        if let Some((g, n)) = self.redo.pop() {
+            self.undo.push((self.genome, self.note));
+            self.genome = g;
+            self.note = n;
+            self.request_patch(false);
+        }
+    }
+
+    fn random_patch(&mut self) {
+        self.status = "rolling the dice...".into();
+        let job = Job::LuckyDip { note: self.note, rng_seed: self.frame };
+        self.send_job(job);
+    }
+
+    fn toggle_loop(&mut self) {
+        if self.audio.loop_playing() {
+            self.audio.stop();
+        } else {
+            self.request_loop(false);
+        }
+    }
+
+    fn loop_sig(&self, root: i32) -> LoopSig {
+        let gid = if self.use_groove && self.groove.is_some() { self.groove_gen } else { 0 };
+        (self.genome, root, self.pattern_idx, self.bpm.to_bits(), self.swing.to_bits(), self.unison.to_bits(), gid)
+    }
+
+    fn request_loop(&mut self, save: bool) {
+        let root = match genome::note_to_midi(&self.key) {
+            Ok(r) => r,
+            Err(_) => {
+                self.status = format!("bad key {:?}", self.key);
+                return;
+            }
+        };
+        if !save {
+            self.last_loop_sig = Some(self.loop_sig(root));
+            if !self.audio.loop_playing() {
+                self.status = "rendering loop...".into();
+            }
+        }
+        let groove = match (&self.groove, self.use_groove) {
+            (Some(g), true) => Some((g.events.clone(), g.beats)),
+            _ => None,
+        };
+        let groove_name = self.groove.as_ref().filter(|_| self.use_groove).map(|g| g.name.clone());
+        let save = save.then(|| {
+            let what = groove_name.as_deref().unwrap_or(loops::PATTERN_NAMES[self.pattern_idx]);
+            format!("loop_{}_{}bpm_{}.wav", what, self.bpm as u32, self.key)
+        });
+        let job = Job::Loop {
+            genome: self.genome,
+            root,
+            pattern_idx: self.pattern_idx,
+            bpm: self.bpm,
+            swing: self.swing,
+            unison: self.unison,
+            groove,
+            save,
+        };
+        self.send_job(job);
+    }
+
+    /// Import a .mid as a loop-lab groove and start it playing.
+    fn load_midi_groove(&mut self, path: &str) {
+        match midiio::load_groove(path) {
+            Ok(g) => {
+                self.groove_gen += 1;
+                self.use_groove = true;
+                self.status = format!("groove: {} — {} bars, key {} moves it", g.name, g.bars(), self.key);
+                self.groove = Some(g);
+                self.request_loop(false);
+            }
+            Err(e) => self.status = format!("midi import failed: {e}"),
+        }
     }
 
     fn grow(&mut self) {
+        if self.shot.is_some() {
+            self.grow_now();
+            return;
+        }
+        let note = if self.grow_arch == 0 {
+            self.note
+        } else {
+            garden::home_note(garden::ARCHETYPE_NAMES[self.grow_arch - 1])
+        };
+        if self.grow_arch != 0 {
+            self.note = note;
+        }
+        self.status = "growing seedlings...".into();
+        let job = Job::Grow {
+            seed: self.genome,
+            arch: self.grow_arch,
+            note,
+            amount: self.grow_amount,
+            rng_seed: self.frame,
+        };
+        self.send_job(job);
+    }
+
+    /// Synchronous grow — screenshot mode only.
+    fn grow_now(&mut self) {
         let mut rng = SmallRng::seed_from_u64(self.frame);
         let (arch, note) = if self.grow_arch == 0 {
             (None, self.note)
@@ -288,7 +492,69 @@ impl App {
             self.note = note;
         }
         let kind = arch.unwrap_or("this patch");
-        self.status = format!("grew {} seedlings from {kind} — click to hear, ✓ to adopt", self.seedlings.len());
+        self.status = format!("grew {} seedlings from {kind} — click to hear, ✔ to adopt", self.seedlings.len());
+    }
+
+    /// Apply everything the worker finished since last frame.
+    fn drain_worker(&mut self) {
+        while let Ok(out) = self.out_rx.try_recv() {
+            match out {
+                Out::Patch { audio, sr, play, cue, key } => {
+                    self.last_audio = audio;
+                    self.last_sr = sr;
+                    self.rendered_key = Some(key);
+                    self.cue = cue;
+                    if play {
+                        self.audio.play(&self.last_audio, self.last_sr, false);
+                    }
+                }
+                Out::LoopReady { audio, sr } => {
+                    // hot swap: pick the new loop up at the bar position the old
+                    // one was at. Rotating a seamless loop stays seamless.
+                    let phase = self.audio.loop_pos_frac();
+                    if phase > 0.0 && !audio.is_empty() {
+                        let cut = ((phase * audio.len() as f32) as usize).min(audio.len() - 1);
+                        let mut rot = Vec::with_capacity(audio.len());
+                        rot.extend_from_slice(&audio[cut..]);
+                        rot.extend_from_slice(&audio[..cut]);
+                        self.audio.play(&rot, sr, true);
+                    } else {
+                        self.audio.play(&audio, sr, true);
+                    }
+                    self.last_audio = audio;
+                    self.last_sr = sr;
+                    self.rendered_key = None; // waveform now holds the loop
+                    self.status = "looping — ⏹ to stop".into();
+                }
+                Out::Seedling { audio, sr } => {
+                    self.audio.play(&audio, sr, false);
+                }
+                Out::Grown { seedlings, arch } => {
+                    let kind = if arch == 0 { "this patch" } else { garden::ARCHETYPE_NAMES[arch - 1] };
+                    self.status =
+                        format!("grew {} seedlings from {kind} — click to hear, ✔ to adopt", seedlings.len());
+                    self.seedlings = seedlings;
+                }
+                Out::Lucky { genome: Some(g) } => {
+                    self.preset_idx = None;
+                    let note = self.note;
+                    self.set_patch(g, note, true);
+                    self.status = "🎲 dealt — best of 12, taste-ranked".into();
+                }
+                Out::Lucky { genome: None } => {
+                    self.status = "all duds — roll again".into();
+                }
+                Out::SavedPatch { name, msg } => {
+                    if let Some(n) = name {
+                        self.user_patches = list_patches();
+                        self.user_sel = Some(n);
+                    }
+                    self.status = msg;
+                }
+                Out::Status(msg) => self.status = msg,
+                Out::Idle => self.busy = false,
+            }
+        }
     }
 
     fn start_match(&mut self, path: String) {
@@ -309,20 +575,6 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
         std::thread::spawn(move || match_thread(target, tx));
-    }
-
-    fn render_loop_audio(&mut self) -> Option<Vec<f32>> {
-        let root = match genome::note_to_midi(&self.key) {
-            Ok(r) => r,
-            Err(_) => {
-                self.status = format!("bad key {:?}", self.key);
-                return None;
-            }
-        };
-        let pat = loops::pattern(loops::PATTERN_NAMES[self.pattern_idx]).unwrap();
-        let mut rng = SmallRng::seed_from_u64(0);
-        let raw = loops::render_loop(&self.genome, root, self.bpm, &pat, 2, self.swing, &mut rng);
-        Some(self.post(raw, loops::SR_OUT, true))
     }
 
     fn load_preset(&mut self, i: usize) {
@@ -357,26 +609,9 @@ impl App {
             .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
             .collect();
         let name = if name.is_empty() { "my_patch".to_string() } else { name };
-        let dir = patches_dir();
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            self.status = format!("couldn't create {}: {e}", dir.display());
-            return;
-        }
-        let gpath = dir.join(format!("{name}.genome.txt"));
-        match genome::save_patch(&gpath, &self.genome, self.note) {
-            Ok(()) => {
-                self.render_current();
-                let _ = wavio::write_wav(
-                    &dir.join(format!("{name}.wav")).to_string_lossy(),
-                    &self.last_audio,
-                    self.last_sr,
-                );
-                self.user_patches = list_patches();
-                self.user_sel = Some(name.clone());
-                self.status = format!("saved {name} -> {}", dir.display());
-            }
-            Err(e) => self.status = format!("save failed: {e}"),
-        }
+        self.status = format!("saving {name}...");
+        let job = Job::SavePatch { genome: self.genome, note: self.note, unison: self.unison, name };
+        self.send_job(job);
     }
 }
 
@@ -399,6 +634,178 @@ fn match_thread(target: Vec<f32>, tx: mpsc::Sender<MatchMsg>) {
         let _ = tx.send(MatchMsg::Progress(gen * 100 / GENS, best));
     });
     let _ = tx.send(MatchMsg::Done { genome: g, midi, l0, l1 });
+}
+
+// ---- render worker (cold path) ------------------------------------------------
+// All synth/DSP/NN work runs here so the UI thread only paints and plays cached
+// audio. Rapid requests (plant/slider drags) coalesce to latest-wins.
+
+/// Identity of a rendered patch preview: (genome, note, unison bits).
+type PatchKey = (Genome, i32, u32);
+
+/// Everything a loop render depends on — changes while looping trigger a hot swap.
+/// Last field: 0 = built-in pattern, else the import id of the MIDI groove.
+type LoopSig = (Genome, i32, usize, u32, u32, u32, u64);
+
+enum Job {
+    Patch { genome: Genome, note: i32, unison: f32, play: bool },
+    Loop {
+        genome: Genome,
+        root: i32,
+        pattern_idx: usize,
+        bpm: f32,
+        swing: f32,
+        unison: f32,
+        groove: Option<(Vec<loops::Ev>, f32)>,
+        save: Option<String>,
+    },
+    Seedling { genome: Genome, note: i32, unison: f32 },
+    Grow { seed: Genome, arch: usize, note: i32, amount: f32, rng_seed: u64 },
+    LuckyDip { note: i32, rng_seed: u64 },
+    SavePatch { genome: Genome, note: i32, unison: f32, name: String },
+}
+
+enum Out {
+    Patch { audio: Vec<f32>, sr: f32, play: bool, cue: f32, key: PatchKey },
+    LoopReady { audio: Vec<f32>, sr: f32 },
+    Seedling { audio: Vec<f32>, sr: f32 },
+    Grown { seedlings: Vec<Seedling>, arch: usize },
+    Lucky { genome: Option<Genome> },
+    SavedPatch { name: Option<String>, msg: String },
+    Status(String),
+    Idle,
+}
+
+fn post_dsp(audio: Vec<f32>, sr: f32, unison: f32, looped: bool) -> Vec<f32> {
+    let mut a = crate::dsp::thicken(&audio, sr, unison);
+    crate::dsp::safety(&mut a, sr, looped);
+    a
+}
+
+/// Drop superseded preview jobs, keeping only the newest of each kind.
+/// Saves are never dropped. A play request survives coalescing.
+fn coalesce(q: &mut std::collections::VecDeque<Job>) {
+    let (mut seen_patch, mut seen_loop, mut seen_seed, mut seen_grow, mut seen_lucky) =
+        (false, false, false, false, false);
+    let mut play_any = false;
+    let mut keep: Vec<Job> = Vec::with_capacity(q.len());
+    while let Some(j) = q.pop_back() {
+        // newest-first walk: the first of a kind we meet is the one to keep
+        let fresh = match &j {
+            Job::Patch { play, .. } => {
+                play_any |= *play;
+                !std::mem::replace(&mut seen_patch, true)
+            }
+            Job::Loop { save: None, .. } => !std::mem::replace(&mut seen_loop, true),
+            Job::Seedling { .. } => !std::mem::replace(&mut seen_seed, true),
+            Job::Grow { .. } => !std::mem::replace(&mut seen_grow, true),
+            Job::LuckyDip { .. } => !std::mem::replace(&mut seen_lucky, true),
+            _ => true,
+        };
+        if fresh {
+            keep.push(j);
+        }
+    }
+    for j in keep.into_iter().rev() {
+        q.push_back(j);
+    }
+    if play_any {
+        for j in q.iter_mut() {
+            if let Job::Patch { play, .. } = j {
+                *play = true;
+            }
+        }
+    }
+}
+
+fn run_job(net: &Net, job: Job) -> Out {
+    match job {
+        Job::Patch { genome, note, unison, play } => {
+            let mut rng = SmallRng::seed_from_u64(0);
+            let raw = synth::render_default(&genome, note as f32, &mut rng);
+            let audio = post_dsp(raw, synth::SR, unison, false);
+            let cue = garden::score(net, &genome);
+            Out::Patch { audio, sr: synth::SR, play, cue, key: (genome, note, unison.to_bits()) }
+        }
+        Job::Loop { genome, root, pattern_idx, bpm, swing, unison, groove, save } => {
+            let mut rng = SmallRng::seed_from_u64(0);
+            let raw = match &groove {
+                Some((evs, beats)) => loops::render_events(&genome, root, bpm, evs, *beats, &mut rng),
+                None => {
+                    let pat = loops::pattern(loops::PATTERN_NAMES[pattern_idx]).unwrap();
+                    loops::render_loop(&genome, root, bpm, &pat, 2, swing, &mut rng)
+                }
+            };
+            let audio = post_dsp(raw, loops::SR_OUT, unison, true);
+            match save {
+                Some(name) => match wavio::write_wav(&name, &audio, loops::SR_OUT) {
+                    Ok(()) => Out::Status(format!("saved {name}")),
+                    Err(e) => Out::Status(format!("save failed: {e}")),
+                },
+                None => Out::LoopReady { audio, sr: loops::SR_OUT },
+            }
+        }
+        Job::Seedling { genome, note, unison } => {
+            let mut rng = SmallRng::seed_from_u64(0);
+            let raw = synth::render_default(&genome, note as f32, &mut rng);
+            Out::Seedling { audio: post_dsp(raw, synth::SR, unison, false), sr: synth::SR }
+        }
+        Job::Grow { seed, arch, note, amount, rng_seed } => {
+            let mut rng = SmallRng::seed_from_u64(rng_seed);
+            let a = if arch == 0 { None } else { Some(garden::ARCHETYPE_NAMES[arch - 1]) };
+            Out::Grown { seedlings: garden::grow(net, &seed, a, note, 8, amount, &mut rng), arch }
+        }
+        Job::LuckyDip { note, rng_seed } => {
+            let mut rng = SmallRng::seed_from_u64(rng_seed);
+            Out::Lucky { genome: garden::lucky_dip(net, note, 12, &mut rng) }
+        }
+        Job::SavePatch { genome, note, unison, name } => {
+            let dir = patches_dir();
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                return Out::SavedPatch { name: None, msg: format!("couldn't create {}: {e}", dir.display()) };
+            }
+            let gpath = dir.join(format!("{name}.genome.txt"));
+            match genome::save_patch(&gpath, &genome, note) {
+                Ok(()) => {
+                    let mut rng = SmallRng::seed_from_u64(0);
+                    let raw = synth::render_default(&genome, note as f32, &mut rng);
+                    let audio = post_dsp(raw, synth::SR, unison, false);
+                    let _ = wavio::write_wav(&dir.join(format!("{name}.wav")).to_string_lossy(), &audio, synth::SR);
+                    Out::SavedPatch { msg: format!("saved {name} -> {}", dir.display()), name: Some(name) }
+                }
+                Err(e) => Out::SavedPatch { name: None, msg: format!("save failed: {e}") },
+            }
+        }
+    }
+}
+
+fn worker_thread(net: Arc<Net>, rx: mpsc::Receiver<Job>, tx: mpsc::Sender<Out>, ctx: egui::Context) {
+    let mut queue = std::collections::VecDeque::new();
+    loop {
+        if queue.is_empty() {
+            match rx.recv() {
+                Ok(j) => queue.push_back(j),
+                Err(_) => return, // app closed
+            }
+        }
+        while let Ok(j) = rx.try_recv() {
+            queue.push_back(j);
+        }
+        coalesce(&mut queue);
+        let job = queue.pop_front().unwrap();
+        if tx.send(run_job(&net, job)).is_err() {
+            return;
+        }
+        if queue.is_empty() {
+            match rx.try_recv() {
+                Ok(j) => queue.push_back(j),
+                Err(_) => {
+                    let _ = tx.send(Out::Idle);
+                }
+            }
+        }
+        ctx.request_repaint();
+    }
 }
 
 // ---- style helpers ------------------------------------------------------------
@@ -697,8 +1104,8 @@ fn knob(ui: &mut egui::Ui, v: &mut f32, label: &str) -> bool {
     changed
 }
 
-fn waveform(ui: &mut egui::Ui, audio: &[f32], color: Color32, width: f32) {
-    let (resp, p) = ui.allocate_painter(Vec2::new(width, 54.0), Sense::hover());
+fn waveform(ui: &mut egui::Ui, audio: &[f32], color: Color32, width: f32, height: f32) {
+    let (resp, p) = ui.allocate_painter(Vec2::new(width, height), Sense::hover());
     let rect = resp.rect;
     p.rect(rect, 4.0, CORE, Stroke::new(1.0, SEED));
     if audio.is_empty() {
@@ -728,11 +1135,11 @@ fn waveform(ui: &mut egui::Ui, audio: &[f32], color: Color32, width: f32) {
 }
 
 /// Segmented level meter, lit from the live playback position.
-fn meter(ui: &mut egui::Ui, level: f32) {
-    let (resp, p) = ui.allocate_painter(Vec2::new(24.0, 54.0), Sense::hover());
+fn meter(ui: &mut egui::Ui, level: f32, height: f32) {
+    let (resp, p) = ui.allocate_painter(Vec2::new(24.0, height), Sense::hover());
     let rect = resp.rect;
     p.rect(rect, 4.0, CORE, Stroke::new(1.0, SEED));
-    let n = 10;
+    let n = (((height - 8.0) / 5.0) as usize).max(4);
     let lit = (level.clamp(0.0, 1.0) * n as f32).ceil() as usize;
     for i in 0..n {
         let frac = i as f32 / n as f32;
@@ -741,7 +1148,7 @@ fn meter(ui: &mut egui::Ui, level: f32) {
             Pos2::new(rect.left() + 5.0, y1 - 3.0),
             Pos2::new(rect.right() - 5.0, y1 - 1.0),
         );
-        let base = if i >= 8 { Color32::from_rgb(230, 210, 90) } else { ACCENT };
+        let base = if i + 2 >= n { Color32::from_rgb(230, 210, 90) } else { ACCENT };
         let col = if i < lit { base } else { base.gamma_multiply(0.12) };
         p.rect(seg, 1.0, col, Stroke::NONE);
     }
@@ -749,7 +1156,8 @@ fn meter(ui: &mut egui::Ui, level: f32) {
 
 /// Seedling bud: glow scales with reward score.
 fn bud(ui: &mut egui::Ui, score: f32) -> egui::Response {
-    let (resp, p) = ui.allocate_painter(Vec2::new(34.0, 34.0), Sense::click());
+    let (resp, mut p) = ui.allocate_painter(Vec2::new(34.0, 34.0), Sense::click());
+    p.set_clip_rect(resp.rect.expand(18.0)); // glow blooms past the hit rect
     let c = resp.rect.center();
     let col = lerp_color(DIM, ACCENT, score);
     let r = 9.0 + 5.0 * score;
@@ -810,24 +1218,82 @@ impl eframe::App for App {
         let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.clone());
         if let Some(f) = dropped.first() {
             if let Some(path) = &f.path {
-                self.start_match(path.to_string_lossy().into_owned());
+                let p = path.to_string_lossy().into_owned();
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+                if ext == "mid" || ext == "midi" {
+                    self.load_midi_groove(&p);
+                } else {
+                    self.start_match(p);
+                }
             }
         }
 
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
-            if let Some((g, n)) = self.undo.pop() {
-                self.redo.push((self.genome, self.note));
-                self.genome = g;
-                self.note = n;
-                self.render_current();
+        self.drain_worker();
+
+        // live loop lab: while a loop plays, any edit to what it's built from
+        // (pattern, bpm, swing, key, the genome itself) re-renders and hot-swaps
+        if self.shot.is_none() && self.audio.loop_playing() {
+            if let Ok(root) = genome::note_to_midi(&self.key) {
+                if self.last_loop_sig != Some(self.loop_sig(root)) {
+                    self.request_loop(false);
+                }
             }
         }
+
+        // ---- keyboard shortcuts (see the ⌨ panel, top right) --------------
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
+            self.do_undo();
+        }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)) {
-            if let Some((g, n)) = self.redo.pop() {
-                self.undo.push((self.genome, self.note));
-                self.genome = g;
-                self.note = n;
-                self.render_current();
+            self.do_redo();
+        }
+        let popup_open = ctx.memory(|m| m.any_popup_open()); // combo dropdowns own the arrows
+        if !ctx.wants_keyboard_input() && !popup_open && self.shot.is_none() {
+            let hit = |k: egui::Key, m: egui::Modifiers| ctx.input_mut(|i| i.consume_key(m, k));
+            use egui::{Key, Modifiers as M};
+            if hit(Key::Space, M::NONE) {
+                self.toggle_play();
+            }
+            if hit(Key::ArrowLeft, M::NONE) {
+                self.step_preset(-1);
+            }
+            if hit(Key::ArrowRight, M::NONE) {
+                self.step_preset(1);
+            }
+            if hit(Key::ArrowUp, M::NONE) {
+                self.nudge_note(1);
+            }
+            if hit(Key::ArrowDown, M::NONE) {
+                self.nudge_note(-1);
+            }
+            if hit(Key::R, M::NONE) {
+                self.random_patch();
+            }
+            if hit(Key::G, M::NONE) {
+                self.grow();
+            }
+            if hit(Key::L, M::NONE) {
+                self.toggle_loop();
+            }
+            if hit(Key::A, M::NONE) {
+                self.swap_ab();
+            }
+            if hit(Key::S, M::COMMAND) {
+                self.save_current_patch();
+            }
+            if hit(Key::K, M::NONE) {
+                self.show_keys = !self.show_keys;
+            }
+            if hit(Key::H, M::NONE) || hit(Key::F1, M::NONE) {
+                self.show_help = !self.show_help;
+            }
+            if hit(Key::Escape, M::NONE) {
+                if self.show_help || self.show_keys {
+                    self.show_help = false;
+                    self.show_keys = false;
+                } else {
+                    self.audio.stop();
+                }
             }
         }
 
@@ -835,8 +1301,43 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
 
+        // ---- fit to screen ----------------------------------------------
+        // Zoom the whole UI so the layout fits the window. The fit is computed
+        // in physical pixels — invariant under zoom — so it cannot oscillate.
+        // Skipped in screenshot mode to keep docs images at 1:1 scale.
+        if self.shot.is_none() {
+            if self.frame == 1 {
+                ctx.options_mut(|o| o.zoom_with_keyboard = false); // zoom is driven below
+            }
+            if !self.fitted_to_monitor {
+                // one-shot: never open larger than the monitor's usable area
+                let vp = ctx.input(|i| (i.viewport().monitor_size, i.viewport().inner_rect));
+                if let (Some(mon), Some(inner)) = vp {
+                    self.fitted_to_monitor = true;
+                    let usable = Vec2::new(mon.x * 0.94, mon.y * 0.90); // taskbar/border slack
+                    if inner.width() > usable.x || inner.height() > usable.y {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(inner.size().min(usable)));
+                        if let Some(cmd) = egui::ViewportCommand::center_on_screen(ctx) {
+                            ctx.send_viewport_cmd(cmd);
+                        }
+                    }
+                }
+            }
+            const DESIGN_W: f32 = 956.0; // 940 content column + margins + scrollbar
+            const MIN_ZOOM: f32 = 0.65; // readability floor — below this we scroll instead
+            const MAX_ZOOM: f32 = 1.6;
+            let native = ctx.native_pixels_per_point().unwrap_or(1.0);
+            let phys = ctx.screen_rect().size() * ctx.pixels_per_point();
+            let design_h = self.content_h + 16.0; // + CentralPanel margins
+            let fit = (phys.x / (native * DESIGN_W)).min(phys.y / (native * design_h));
+            let zoom = fit.clamp(MIN_ZOOM, MAX_ZOOM);
+            if (zoom - ctx.zoom_factor()).abs() > 0.005 {
+                ctx.set_zoom_factor(zoom);
+            }
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
                 // center a capped-width content column when the window is wide
                 let full = ui.available_width();
                 let content_w = full.min(940.0);
@@ -848,7 +1349,12 @@ impl eframe::App for App {
 
                 self.top_bar(ui);
                 ui.add_space(2.0);
-                ui.label(egui::RichText::new(&self.status).size(12.5).color(TEXT));
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&self.status).size(12.5).color(TEXT));
+                    if self.busy {
+                        ui.add(egui::Spinner::new().size(12.0).color(ACCENT));
+                    }
+                });
                 if self.rx.is_some() {
                     ui.add(egui::ProgressBar::new(self.progress).desired_width(300.0));
                 }
@@ -860,113 +1366,185 @@ impl eframe::App for App {
                 let left_w = if stack { avail - 4.0 } else { (avail - right_w - 24.0).clamp(360.0, 560.0) };
 
                 let plant_panel = |app: &mut App, ui: &mut egui::Ui| {
-                    panel(ui, "plant modulation system", |ui| {
+                    panel(ui, "shape — drag the plant", |ui| {
                         ui.set_width(left_w - 24.0);
                         if plant(ui, &mut app.genome, app.note, left_w - 40.0) {
                             app.preset_idx = None;
-                            app.render_current();
+                            app.request_patch(false);
                         }
                         ui.horizontal(|ui| {
-                            if ui.button("▶ play").clicked() {
+                            if ui.button("▶ play").on_hover_text("space").clicked() {
                                 app.play_patch();
                             }
                             if ui.button("−").clicked() {
-                                app.note -= 1;
-                                app.render_current();
+                                app.nudge_note(-1);
                             }
                             ui.label(egui::RichText::new(genome::midi_to_name(app.note)).monospace());
                             if ui.button("+").clicked() {
-                                app.note += 1;
-                                app.render_current();
+                                app.nudge_note(1);
                             }
                             ui.add_space(6.0);
-                            let cue = garden::score(&app.net, &app.genome);
+                            let cue = app.cue;
                             ui.label(
-                                egui::RichText::new(format!("cue {:.0}%", cue * 100.0))
+                                egui::RichText::new(format!("taste {:.0}%", cue * 100.0))
                                     .monospace()
                                     .size(11.0)
                                     .color(lerp_color(DIM, ACCENT_HOT, cue)),
                             )
-                            .on_hover_text("predicted quality from the RLHF reward model\ntrained on juxxs's star ratings");
+                            .on_hover_text("the taste model's guess at how good this sounds\n(trained on juxxs's star ratings)");
                             ui.add_space(6.0);
-                            ui.add(
-                                egui::TextEdit::singleline(&mut app.patch_name)
-                                    .desired_width(96.0)
-                                    .hint_text("patch name"),
-                            );
-                            if ui.button("💾 save").on_hover_text("save to your patch library\n(Documents/synfection/patches)").clicked() {
-                                app.save_current_patch();
-                            }
-                        });
-                        ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("unison").color(DIM).small());
-                            if param_slider_w(ui, &mut app.unison, 150.0) {
-                                app.render_current();
+                            if param_slider_w(ui, &mut app.unison, 120.0) {
+                                app.request_patch(false);
                             }
                             value_box(ui, &format!("{:.0}%", app.unison * 100.0), app.unison > 0.01);
+                        });
+                        ui.add_space(2.0);
+                        egui::CollapsingHeader::new(
+                            egui::RichText::new("fine-tune").color(DIM).size(11.0),
+                        )
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            let mut changed = false;
+                            let reals = genome::denorm(&app.genome);
+                            for (title, lo, hi) in
+                                [("oscillators", 0usize, 6usize), ("filter & drive", 6, 12), ("envelope", 12, 16)]
+                            {
+                                ui.add_space(2.0);
+                                ui.label(egui::RichText::new(title.to_uppercase()).color(DIM).size(9.5));
+                                egui::Grid::new(title).num_columns(3).spacing([8.0, 3.0]).show(ui, |ui| {
+                                    for i in lo..hi {
+                                        ui.label(egui::RichText::new(PARAMS[i].0).monospace().size(11.0));
+                                        changed |= param_slider_w(ui, &mut app.genome[i], 200.0);
+                                        value_box(ui, &fmt_real(reals[i]), app.genome[i] > 0.02);
+                                        ui.end_row();
+                                    }
+                                });
+                            }
+                            if changed {
+                                app.preset_idx = None;
+                                app.request_patch(false);
+                            }
                         });
                     });
                 };
 
                 let right_panels = |app: &mut App, ui: &mut egui::Ui| {
-                    panel(ui, "genome", |ui| {
-                        let mut changed = false;
-                        let reals = genome::denorm(&app.genome);
-                        egui::Grid::new("params").num_columns(3).spacing([8.0, 3.0]).show(ui, |ui| {
-                            for i in 0..N_PARAMS {
-                                ui.label(egui::RichText::new(PARAMS[i].0).monospace().size(11.0));
-                                changed |= param_slider(ui, &mut app.genome[i]);
-                                value_box(ui, &fmt_real(reals[i]), app.genome[i] > 0.02);
-                                ui.end_row();
+                    panel(ui, "grow — breed it to taste (g)", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("seed").color(DIM).small());
+                            egui::ComboBox::from_id_salt("arch")
+                                .selected_text(if app.grow_arch == 0 {
+                                    "this patch"
+                                } else {
+                                    garden::ARCHETYPE_NAMES[app.grow_arch - 1]
+                                })
+                                .width(110.0)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut app.grow_arch, 0, "this patch");
+                                    for (i, a) in garden::ARCHETYPE_NAMES.iter().enumerate() {
+                                        ui.selectable_value(&mut app.grow_arch, i + 1, *a);
+                                    }
+                                });
+                            if ui.button("🌱 grow").clicked() {
+                                app.grow();
                             }
                         });
-                        if changed {
-                            app.preset_idx = None;
-                            app.render_current();
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("wildness").color(DIM).small());
+                            param_slider(ui, &mut app.grow_amount);
+                        });
+                        if !app.seedlings.is_empty() {
+                            ui.add_space(4.0);
+                            ui.horizontal_wrapped(|ui| {
+                                let mut adopt: Option<usize> = None;
+                                for i in 0..app.seedlings.len() {
+                                    ui.vertical(|ui| {
+                                        let s = &app.seedlings[i];
+                                        if bud(ui, s.score).clicked() {
+                                            let job = Job::Seedling {
+                                                genome: s.genome,
+                                                note: app.note,
+                                                unison: app.unison,
+                                            };
+                                            app.send_job(job);
+                                        }
+                                        ui.label(
+                                            egui::RichText::new(format!("{:.0}%", app.seedlings[i].score * 100.0))
+                                                .monospace()
+                                                .size(10.0)
+                                                .color(DIM),
+                                        );
+                                        if ui.small_button("✔").clicked() {
+                                            adopt = Some(i);
+                                        }
+                                    });
+                                }
+                                if let Some(i) = adopt {
+                                    let g = app.seedlings[i].genome;
+                                    app.preset_idx = None;
+                                    let note = app.note;
+                                    app.set_patch(g, note, true);
+                                    app.grow_arch = 0;
+                                    app.grow();
+                                    app.status = "adopted — growing the next generation from it".into();
+                                }
+                            });
+                            ui.label(egui::RichText::new("click = hear · ✔ = keep").color(DIM).small());
                         }
                     });
                     ui.add_space(6.0);
-                    panel(ui, "loop lab", |ui| {
+                    panel(ui, "loop lab (l)", |ui| {
                         ui.horizontal(|ui| {
+                            let sel = if app.use_groove {
+                                app.groove.as_ref().map(|g| format!("🎹 {}", g.name)).unwrap_or_default()
+                            } else {
+                                loops::PATTERN_NAMES[app.pattern_idx].to_string()
+                            };
                             egui::ComboBox::from_id_salt("pat")
-                                .selected_text(loops::PATTERN_NAMES[app.pattern_idx])
+                                .selected_text(sel)
                                 .show_ui(ui, |ui| {
                                     for (i, name) in loops::PATTERN_NAMES.iter().enumerate() {
-                                        ui.selectable_value(&mut app.pattern_idx, i, *name);
+                                        if ui.selectable_label(!app.use_groove && app.pattern_idx == i, *name).clicked() {
+                                            app.pattern_idx = i;
+                                            app.use_groove = false;
+                                        }
+                                    }
+                                    if let Some(g) = &app.groove {
+                                        ui.separator();
+                                        if ui.selectable_label(app.use_groove, format!("🎹 {}", g.name)).clicked() {
+                                            app.use_groove = true;
+                                        }
                                     }
                                 });
                             ui.add(egui::DragValue::new(&mut app.bpm).range(80.0..=180.0).suffix(" bpm"));
                             ui.add(egui::TextEdit::singleline(&mut app.key).desired_width(30.0));
                         });
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("swing").color(DIM).small());
-                            param_slider(ui, &mut app.swing);
-                            value_box(ui, &format!("{:.0}%", app.swing * 100.0), app.swing > 0.01);
+                            if app.use_groove {
+                                let bars = app.groove.as_ref().map(|g| g.bars()).unwrap_or(1);
+                                ui.label(
+                                    egui::RichText::new(format!("your midi groove · {bars} bars · key moves it"))
+                                        .color(DIM)
+                                        .small(),
+                                );
+                            } else {
+                                ui.label(egui::RichText::new("swing").color(DIM).small());
+                                param_slider(ui, &mut app.swing);
+                                value_box(ui, &format!("{:.0}%", app.swing * 100.0), app.swing > 0.01);
+                            }
                         });
                         ui.horizontal(|ui| {
                             let playing = app.audio.loop_playing();
                             let label = if playing { "⏹ stop" } else { "▶ loop" };
-                            if ui.button(label).clicked() {
-                                if playing {
-                                    app.audio.stop();
-                                } else if let Some(a) = app.render_loop_audio() {
-                                    app.audio.play(&a, loops::SR_OUT, true);
-                                    app.last_audio = a;
-                                    app.last_sr = loops::SR_OUT;
-                                }
+                            if ui.button(label).on_hover_text("L").clicked() {
+                                app.toggle_loop();
                             }
                             if ui.button("💾 save loop").clicked() {
-                                if let Some(a) = app.render_loop_audio() {
-                                    let name = format!(
-                                        "loop_{}_{}bpm_{}.wav",
-                                        loops::PATTERN_NAMES[app.pattern_idx], app.bpm as u32, app.key
-                                    );
-                                    let _ = wavio::write_wav(&name, &a, loops::SR_OUT);
-                                    app.status = format!("saved {name}");
-                                }
+                                app.request_loop(true);
                             }
-                            if app.audio.loop_playing() {
-                                ui.label(egui::RichText::new("● looping").color(ACCENT).small());
+                            if playing {
+                                ui.label(egui::RichText::new("• looping — edits update it live").color(ACCENT).small());
                             }
                         });
                     });
@@ -990,134 +1568,121 @@ impl eframe::App for App {
                     });
                 }
 
-                ui.add_space(6.0);
-
-                panel(ui, "garden — grow it to taste", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("seed").color(DIM).small());
-                        egui::ComboBox::from_id_salt("arch")
-                            .selected_text(if self.grow_arch == 0 {
-                                "this patch"
-                            } else {
-                                garden::ARCHETYPE_NAMES[self.grow_arch - 1]
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.grow_arch, 0, "this patch");
-                                for (i, a) in garden::ARCHETYPE_NAMES.iter().enumerate() {
-                                    ui.selectable_value(&mut self.grow_arch, i + 1, *a);
-                                }
-                            });
-                        ui.label(egui::RichText::new("wildness").color(DIM).small());
-                        param_slider(ui, &mut self.grow_amount);
-                        if ui.button("🌱 grow").clicked() {
-                            self.grow();
-                        }
-                        if !self.seedlings.is_empty() {
-                            ui.label(egui::RichText::new("click = hear · ✓ = keep").color(DIM).small());
-                        }
-                    });
-                    if !self.seedlings.is_empty() {
-                        ui.add_space(4.0);
-                        ui.horizontal_wrapped(|ui| {
-                            let mut adopt: Option<usize> = None;
-                            for i in 0..self.seedlings.len() {
-                                ui.vertical(|ui| {
-                                    let s = &self.seedlings[i];
-                                    if bud(ui, s.score).clicked() {
-                                        let mut rng = SmallRng::seed_from_u64(0);
-                                        let raw = synth::render_default(&s.genome, self.note as f32, &mut rng);
-                                        let a = self.post(raw, synth::SR, false);
-                                        self.audio.play(&a, synth::SR, false);
-                                    }
-                                    ui.label(
-                                        egui::RichText::new(format!("{:.0}%", self.seedlings[i].score * 100.0))
-                                            .monospace()
-                                            .size(10.0)
-                                            .color(DIM),
-                                    );
-                                    if ui.small_button("✓").clicked() {
-                                        adopt = Some(i);
-                                    }
-                                });
-                            }
-                            if let Some(i) = adopt {
-                                let g = self.seedlings[i].genome;
-                                self.preset_idx = None;
-                                let note = self.note;
-                                self.set_patch(g, note, true);
-                                self.grow_arch = 0;
-                                self.grow();
-                                self.status = "adopted — next generation grown from it".into();
-                            }
-                        });
-                    }
+                // waveform strip — passive readout, no panel chrome
+                ui.add_space(8.0);
+                let level = self.audio.level();
+                ui.horizontal(|ui| {
+                    let w = ui.available_width() - 34.0;
+                    waveform(ui, &self.last_audio, ACCENT, w, 30.0);
+                    meter(ui, level, 30.0);
                 });
-
-                ui.add_space(6.0);
-
-                panel(ui, "patch waveform", |ui| {
+                if self.target.is_some() {
+                    ui.add_space(3.0);
+                    let (mut play_target, mut reclone) = (false, false);
                     ui.horizontal(|ui| {
-                        let w = ui.available_width() - 34.0;
-                        let audio = self.last_audio.clone();
-                        waveform(ui, &audio, ACCENT, w);
-                        meter(ui, self.audio.level());
+                        ui.label(egui::RichText::new(format!("target · {}", self.target_name)).color(DIM).small());
+                        play_target = ui.small_button("▶ target").clicked();
+                        reclone = ui.small_button("↻ re-clone").clicked();
                     });
-                    if let Some(t) = &self.target {
-                        let t = t.clone();
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(format!("target · {}", self.target_name)).color(DIM).small());
-                            if ui.small_button("▶ target").clicked() {
-                                let mut safe = t.clone();
-                                crate::dsp::safety(&mut safe, synth::SR, false);
-                                self.audio.play(&safe, synth::SR, false);
-                            }
-                            if ui.small_button("↻ re-clone").clicked() {
-                                self.status = "re-cloning...".into();
-                                self.progress = 0.0;
-                                let (tx, rx) = mpsc::channel();
-                                self.rx = Some(rx);
-                                let target = t.clone();
-                                std::thread::spawn(move || match_thread(target, tx));
-                            }
-                        });
-                        let w = ui.available_width();
-                        waveform(ui, &t, DIM, w);
+                    let w = ui.available_width();
+                    waveform(ui, self.target.as_deref().unwrap_or(&[]), DIM, w, 26.0);
+                    if play_target {
+                        let mut safe = self.target.clone().unwrap();
+                        crate::dsp::safety(&mut safe, synth::SR, false);
+                        self.audio.play(&safe, synth::SR, false);
                     }
-                });
+                    if reclone {
+                        self.status = "re-cloning...".into();
+                        self.progress = 0.0;
+                        let (tx, rx) = mpsc::channel();
+                        self.rx = Some(rx);
+                        let target = self.target.clone().unwrap();
+                        std::thread::spawn(move || match_thread(target, tx));
+                    }
+                }
 
                 ui.add_space(40.0); // keep the ? button clear of content
+                self.content_h = ui.min_rect().height(); // drives next frame's zoom fit
 
                 }); // content column
                 }); // centering row
             });
         });
 
-        // floating help button, bottom-right
-        egui::Area::new(egui::Id::new("help_btn"))
-            .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-14.0, -14.0))
-            .show(ctx, |ui| {
-                let (resp, p) = ui.allocate_painter(Vec2::splat(30.0), Sense::click());
+        // floating round buttons: ? bottom-right, ⌨ top-right
+        let round_btn = |id: &str, anchor: Align2, offset: Vec2, glyph: &str, on: bool| -> bool {
+            let mut clicked = false;
+            egui::Area::new(egui::Id::new(id)).anchor(anchor, offset).show(ctx, |ui| {
+                let (resp, mut p) = ui.allocate_painter(Vec2::splat(30.0), Sense::click());
+                // let the glow bloom past the widget rect — clipping it to the
+                // 30px square reads as a square plate behind the circle
+                p.set_clip_rect(resp.rect.expand(28.0));
                 let c = resp.rect.center();
-                let hot = resp.hovered() || self.show_help;
+                let hot = resp.hovered() || on;
                 glow(&p, c, 13.0, ACCENT, if hot { 0.8 } else { 0.3 });
                 p.circle_filled(c, 13.0, if hot { SEED } else { METAL });
                 p.circle_stroke(c, 13.0, Stroke::new(1.2, if hot { ACCENT } else { METAL_HI }));
-                p.text(c, Align2::CENTER_CENTER, "?", FontId::proportional(15.0), if hot { ACCENT_HOT } else { TEXT });
-                if resp.clicked() {
-                    self.show_help = !self.show_help;
-                }
-                resp.on_hover_text("how to use synfection");
+                p.text(c, Align2::CENTER_CENTER, glyph, FontId::proportional(15.0), if hot { ACCENT_HOT } else { TEXT });
+                clicked = resp.clicked();
             });
+            clicked
+        };
+        if round_btn("help_btn", Align2::RIGHT_BOTTOM, Vec2::new(-14.0, -14.0), "?", self.show_help) {
+            self.show_help = !self.show_help;
+        }
+        if round_btn("keys_btn", Align2::RIGHT_TOP, Vec2::new(-14.0, 14.0), "⌨", self.show_keys) {
+            self.show_keys = !self.show_keys;
+        }
+
+        if self.show_keys {
+            egui::Area::new(egui::Id::new("keys_panel"))
+                .anchor(Align2::RIGHT_TOP, Vec2::new(-14.0, 52.0))
+                .show(ctx, |ui| {
+                    panel(ui, "keyboard", |ui| {
+                        let key_chip = |ui: &mut egui::Ui, keys: &str| {
+                            let galley = ui.painter().layout_no_wrap(
+                                keys.to_string(),
+                                FontId::monospace(10.0),
+                                ACCENT,
+                            );
+                            let (rect, _) = ui.allocate_exact_size(galley.size() + Vec2::new(12.0, 5.0), Sense::hover());
+                            let p = ui.painter();
+                            p.rect(rect, 4.0, CORE, Stroke::new(1.0, SEED));
+                            p.galley(rect.min + Vec2::new(6.0, 2.5), galley, ACCENT);
+                        };
+                        egui::Grid::new("keys").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
+                            for (keys, what) in [
+                                ("space", "play / stop"),
+                                ("← →", "browse presets"),
+                                ("↑ ↓", "note up / down"),
+                                ("r", "random patch"),
+                                ("g", "grow seedlings"),
+                                ("l", "loop start / stop"),
+                                ("a", "a/b swap"),
+                                ("ctrl z · y", "undo / redo"),
+                                ("ctrl s", "save patch"),
+                                ("h · f1", "help"),
+                                ("k", "this panel"),
+                                ("esc", "stop sound / close"),
+                            ] {
+                                key_chip(ui, keys);
+                                ui.label(egui::RichText::new(what).size(11.5));
+                                ui.end_row();
+                            }
+                        });
+                    });
+                });
+        }
         if self.show_help {
             let mut open = true;
             egui::Window::new("how to use synfection")
                 .open(&mut open)
                 .collapsible(false)
-                .default_width(430.0)
+                .default_width((ctx.screen_rect().width() - 60.0).min(430.0))
                 .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().max_height(430.0).show(ui, |ui| {
+                    let help_h = (ctx.screen_rect().height() - 140.0).clamp(120.0, 430.0);
+                    egui::ScrollArea::vertical().max_height(help_h).show(ui, |ui| {
                         let section = |ui: &mut egui::Ui, title: &str, lines: &[&str]| {
                             ui.label(egui::RichText::new(title).color(ACCENT).strong());
                             for l in lines {
@@ -1131,29 +1696,36 @@ impl eframe::App for App {
                             "🎲 random deals you a fresh sound, ranked by the taste model.",
                         ]);
                         section(ui, "SHAPE IT", &[
-                            "Drag the plant's branches — longer branch = more of that ingredient. The sliders do the same with fine control.",
+                            "Drag the plant's branches — longer branch = more of that ingredient. fine-tune (under the plant) opens precision sliders.",
                             "unison makes it thicker and wider. − / + moves the note.",
-                            "A/B flips between two versions. ↶ ↷ are undo and redo (ctrl+z / ctrl+y).",
-                            "cue % is the taste model's guess at how good the patch sounds.",
+                            "A/B flips between two versions. ↺ ↻ are undo and redo (ctrl+z / ctrl+y).",
+                            "taste % is the model's guess at how good the patch sounds.",
                         ]);
                         section(ui, "GROW IT", &[
-                            "In the garden, pick a seed — this patch, or a style (bass, reese, stab, pad...).",
+                            "In grow (top right), pick a seed — this patch, or a style (bass, reese, stab, pad...).",
                             "Press 🌱 grow: eight buds appear. Brighter glow = the taste model likes it more.",
-                            "Click a bud to hear it. Press ✓ to keep it — the next generation grows from your pick. Repeat until it's yours.",
+                            "Click a bud to hear it. Press ✔ to keep it — the next generation grows from your pick. Repeat until it's yours.",
                             "wildness controls how different the children are.",
                         ]);
                         section(ui, "MAKE LOOPS", &[
                             "loop lab plays your patch as a bassline groove — pick a pattern, bpm and key.",
                             "swing adds shuffle. ▶ loop plays seamlessly until ⏹ stop.",
+                            "While it loops, everything is live: change the pattern, bpm, swing, or the patch itself and the loop follows in place.",
+                            "Got your own groove? Drop a .mid from your DAW onto the window — it becomes a pattern. Its lowest note lands on the loop key, so it transposes.",
                             "💾 save loop writes a 44.1 kHz .wav next to the app.",
                         ]);
                         section(ui, "KEEP IT", &[
-                            "Type a name and press 💾 save — patches live in Documents/synfection/patches.",
+                            "Type a name up top and press 💾 save — patches live in Documents/synfection/patches.",
                             "They appear under YOUR PATCHES in the dropdown, every time you open the app.",
                         ]);
                         section(ui, "SAFETY", &[
                             "Everything you hear or save runs through a built-in limiter and loudness guard.",
                             "Random experiments can't clip, blast, or hurt your ears — go wild.",
+                        ]);
+                        section(ui, "SHORTCUTS", &[
+                            "space play · ←→ presets · ↑↓ note · r random · g grow · l loop",
+                            "a a/b · ctrl+z/y undo/redo · ctrl+s save · esc stop",
+                            "Press k (or the ⌨ button, top right) for the full list.",
                         ]);
                     });
                 });
@@ -1198,9 +1770,8 @@ impl App {
                 .map(|i| PRESETS[i].name.to_string())
                 .or_else(|| self.user_sel.clone())
                 .unwrap_or_else(|| "custom".into());
-            if ui.button("◀").clicked() {
-                let i = self.preset_idx.map(|i| (i + PRESETS.len() - 1) % PRESETS.len()).unwrap_or(0);
-                self.load_preset(i);
+            if ui.button("◀").on_hover_text("previous preset (←)").clicked() {
+                self.step_preset(-1);
             }
             let mut pick: Option<usize> = None;
             let mut pick_user: Option<String> = None;
@@ -1230,48 +1801,54 @@ impl App {
             if let Some(name) = pick_user {
                 self.load_user_patch(&name);
             }
-            if ui.button("▶").clicked() {
-                let i = self.preset_idx.map(|i| (i + 1) % PRESETS.len()).unwrap_or(0);
-                self.load_preset(i);
+            if ui.button("▶").on_hover_text("next preset (→)").clicked() {
+                self.step_preset(1);
             }
 
             let ab = if self.ab_is_b { "B/A" } else { "A/B" };
-            if ui.button(ab).on_hover_text("swap with the other slot").clicked() {
-                std::mem::swap(&mut self.genome, &mut self.ab_other.0);
-                std::mem::swap(&mut self.note, &mut self.ab_other.1);
-                self.ab_is_b = !self.ab_is_b;
-                self.render_current();
-                self.audio.play(&self.last_audio, self.last_sr, false);
+            if ui.button(ab).on_hover_text("swap with the other slot (A)").clicked() {
+                self.swap_ab();
             }
-            if ui.button("↶").on_hover_text("undo (ctrl+z)").clicked() {
-                if let Some((g, n)) = self.undo.pop() {
-                    self.redo.push((self.genome, self.note));
-                    self.genome = g;
-                    self.note = n;
-                    self.render_current();
-                }
+            if ui.button("↺").on_hover_text("undo (ctrl+z)").clicked() {
+                self.do_undo();
             }
-            if ui.button("↷").on_hover_text("redo (ctrl+y)").clicked() {
-                if let Some((g, n)) = self.redo.pop() {
-                    self.undo.push((self.genome, self.note));
-                    self.genome = g;
-                    self.note = n;
-                    self.render_current();
+            if ui.button("↻").on_hover_text("redo (ctrl+y)").clicked() {
+                self.do_redo();
+            }
+
+            if ui.button("🎲 random").on_hover_text("surprise me — best of 12, taste-ranked (R)").clicked() {
+                self.random_patch();
+            }
+            if ui
+                .button("⬆ open")
+                .on_hover_text("wav → clone it as a patch\nmid → loop it as your own groove")
+                .clicked()
+            {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("wav or midi", &["wav", "mid", "midi"])
+                    .pick_file()
+                {
+                    let p = path.to_string_lossy().into_owned();
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+                    if ext == "mid" || ext == "midi" {
+                        self.load_midi_groove(&p);
+                    } else {
+                        self.start_match(p);
+                    }
                 }
             }
 
-            if ui.button("🎲 random").on_hover_text("surprise me — best of 12, taste-ranked").clicked() {
-                let mut rng = SmallRng::seed_from_u64(self.frame);
-                if let Some(g) = garden::lucky_dip(&self.net, self.note, 12, &mut rng) {
-                    self.preset_idx = None;
-                    let note = self.note;
-                    self.set_patch(g, note, true);
-                }
-            }
-            if ui.button("⬆ open wav").clicked() {
-                if let Some(path) = rfd::FileDialog::new().add_filter("wav", &["wav"]).pick_file() {
-                    self.start_match(path.to_string_lossy().into_owned());
-                }
+            ui.add(
+                egui::TextEdit::singleline(&mut self.patch_name)
+                    .desired_width(96.0)
+                    .hint_text("patch name"),
+            );
+            if ui
+                .button("💾 save")
+                .on_hover_text("save to your patch library (ctrl+s)\nDocuments/synfection/patches")
+                .clicked()
+            {
+                self.save_current_patch();
             }
 
             let mut vol = self.audio.volume;
@@ -1285,8 +1862,9 @@ impl App {
 pub fn run(genome_path: Option<String>, shot: Option<String>) -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([900.0, 820.0])
-            .with_min_inner_size([560.0, 420.0])
+            .with_inner_size([956.0, 860.0]) // full design size; clamped to monitor below
+            .with_min_inner_size([420.0, 320.0])
+            .with_clamp_size_to_monitor_size(true)
             .with_title("synfection"),
         ..Default::default()
     };

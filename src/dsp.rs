@@ -204,6 +204,24 @@ pub fn safety(x: &mut [f32], sr: f32, looped: bool) {
     if x.is_empty() {
         return;
     }
+    // subsonic guard first: one-pole DC/rumble blocker at ~25 Hz so an 8 Hz
+    // sub can't steal the normalization headroom. For loops, warm the filter
+    // state on the tail so the seam stays continuous.
+    let a = 1.0 - std::f32::consts::TAU * 25.0 / sr;
+    let (mut px, mut py) = (0.0f32, 0.0f32);
+    if looped {
+        for &v in &x[x.len().saturating_sub(8192)..] {
+            let y = v - px + a * py;
+            px = v;
+            py = y;
+        }
+    }
+    for v in x.iter_mut() {
+        let y = *v - px + a * py;
+        px = *v;
+        py = y;
+        *v = y;
+    }
     let peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     if peak > CEILING {
         let s = CEILING / peak;

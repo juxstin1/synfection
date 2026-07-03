@@ -156,3 +156,62 @@ pub fn render_loop(
     }
     buf
 }
+
+/// One note of an imported MIDI groove: onset and duration in beats,
+/// semitone offset above the loop root, velocity gain 0..1.
+#[derive(Clone, Copy)]
+pub struct Ev {
+    pub beat: f32,
+    pub dur: f32,
+    pub semi: i32,
+    pub gain: f32,
+}
+
+/// Render a MIDI groove: same additive, seamless wrap-around as `render_loop`,
+/// but free timing/length/polyphony. `beats` is the loop length (whole bars).
+pub fn render_events(g: &Genome, root_midi: i32, bpm: f32, evs: &[Ev], beats: f32, rng: &mut SmallRng) -> Vec<f32> {
+    let sr = SR_OUT;
+    let beat_n = (60.0 / bpm * sr).round() as usize;
+    let loop_n = ((beat_n as f32 * beats).round() as usize).max(1);
+    let mut buf = vec![0.0f32; loop_n];
+    let tail = (0.30 * sr) as usize;
+    for e in evs {
+        let midi = root_midi + e.semi;
+        // floor at 30 ms: 1-tick DAW notes should render as notes, not clicks
+        let gate_n = ((e.dur * 60.0 / bpm * sr).round() as usize).max((0.030 * sr) as usize);
+        let n = gate_n + tail;
+        let note_dur = gate_n as f32 / sr;
+        let a = render(g, midi as f32, sr, n, note_dur, rng);
+        let pos = ((e.beat * beat_n as f32).round() as usize) % loop_n;
+        for (j, v) in a.iter().enumerate() {
+            buf[(pos + j) % loop_n] += v * e.gain;
+        }
+    }
+    let peak = buf.iter().fold(0.0f32, |m, x| m.max(x.abs())) + 1e-9;
+    for v in buf.iter_mut() {
+        *v = *v / peak * 0.9;
+    }
+    buf
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+
+    #[test]
+    fn groove_renders_full_length_audio() {
+        let g = [0.5f32; crate::genome::N_PARAMS];
+        let evs = [
+            Ev { beat: 0.0, dur: 1.0, semi: 0, gain: 0.9 },
+            Ev { beat: 2.0, dur: 0.5, semi: 12, gain: 0.7 },
+        ];
+        let mut rng = SmallRng::seed_from_u64(0);
+        let buf = render_events(&g, 41, 138.0, &evs, 4.0, &mut rng);
+        let beat_n = (60.0 / 138.0 * SR_OUT).round() as usize;
+        assert_eq!(buf.len(), beat_n * 4);
+        let rms = (buf.iter().map(|v| v * v).sum::<f32>() / buf.len() as f32).sqrt();
+        assert!(rms > 0.01, "groove should not be silent (rms {rms})");
+        assert!(buf.iter().all(|v| v.abs() <= 0.91), "peak-normalized to 0.9");
+    }
+}

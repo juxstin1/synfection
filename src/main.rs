@@ -6,6 +6,7 @@ mod garden;
 mod genome;
 mod loops;
 mod matcher;
+mod midiio;
 mod net;
 mod presets;
 mod synth;

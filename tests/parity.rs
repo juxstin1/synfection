@@ -115,7 +115,7 @@ fn presets_are_alive_and_scored() {
     let mut rng = SmallRng::seed_from_u64(1);
     for p in presets::PRESETS.iter() {
         let a = synth::render_default(&p.genome, p.note as f32, &mut rng);
-        assert!(!garden::is_dud(&a), "preset {:?} renders as a dud", p.name);
+        assert!(!garden::vet(&a, synth::SR).bad(), "preset {:?} renders as a dud", p.name);
         let s = net.reward(&p.genome).expect("reward model missing from weights bundle");
         assert!((0.0..=1.0).contains(&s), "preset {:?} score {s}", p.name);
     }
@@ -129,7 +129,7 @@ fn archetype_seeds_are_mostly_alive() {
         for _ in 0..6 {
             let g = garden::sample_archetype(arch, &mut rng);
             let a = synth::render_default(&g, garden::home_note(arch) as f32, &mut rng);
-            if !garden::is_dud(&a) {
+            if !garden::vet(&a, synth::SR).bad() {
                 alive += 1;
             }
         }

@@ -6,6 +6,11 @@ Drop any sound into synfection and it grows a synth patch that plays it back —
 then lets you thicken it, breed it into something new, and turn it into
 club-ready loops. One small app. No install, no plugins, no accounts.
 
+The brain taught itself: it learned to reverse-engineer synth patches by
+listening to **192,000 sounds it rendered for itself** — then learned what
+*sounds good* from a working DJ's star-ratings. No other freeware
+sound-matcher ships with an actual ear.
+
 ![synfection](docs/ui.png)
 
 ## What it does
@@ -18,7 +23,9 @@ club-ready loops. One small app. No install, no plugins, no accounts.
 - 🔊 **Make it thick** — a one-knob unison spreads your patch across detuned
   voices for that wide, expensive sound.
 - 🥁 **Make loops** — twelve bassline grooves (UK garage, speed garage, bass
-  house, drum & bass) with adjustable swing. Loops play seamlessly and save as
+  house, drum & bass) with adjustable swing — or drop a `.mid` from your DAW
+  and loop *your own* groove. Everything is live: change the pattern, tempo,
+  or the patch itself while it loops and it follows in place. Loops save as
   ready-to-use `.wav` files.
 - 💾 **Keep everything** — name a patch, save it, and it's in your library
   every time you open the app. Patches are tiny text files you can back up or
@@ -42,8 +49,11 @@ Grab your platform from [**Releases**](https://github.com/juxstin1/synfection/re
 | **macOS** (Intel) | `synfection-macos-x86_64` |
 | **Linux** | `synfection-linux-x86_64` |
 
-macOS / Linux: run `chmod +x synfection-*` once. On macOS, the first launch is
-right-click → Open (it's an unsigned indie binary).
+macOS / Linux: run `chmod +x synfection-*` once. macOS will block the first
+launch (it's an unsigned indie binary) — the quick fix is
+`xattr -d com.apple.quarantine synfection-*` in Terminal, or launch it once,
+then allow it under **System Settings → Privacy & Security → Open Anyway**.
+(Right-click → Open no longer works on macOS 15+.)
 
 ## Your first five minutes
 
@@ -73,7 +83,9 @@ On top of that sits a **taste model trained on real star-ratings from a working
 DJ** — hundreds of patches rated by ear across seven families: deep subs,
 reese growls, leads, plucks, stabs, pads, and keys. That's what makes the
 garden's buds glow and the 🎲 random button deal you *good* hands instead of
-noise.
+noise. Most generative tools aim for the statistical average; synfection has
+one specific person's taste baked in — it suggests what *he'd* keep, not what's
+merely plausible.
 
 ## Built-in safety
 
@@ -87,8 +99,11 @@ The same binary is a full command line tool (`synfection --help`): clone,
 render, breed, and batch-generate loops from scripts. The machine-learning lab
 that trains the models lives in [`lab/`](lab/) with its own
 [research notes](docs/LAB.md) — PyTorch training, the rating pipeline, and the
-export path that bakes the network into the app. The Rust engine is verified
-sample-for-sample against the PyTorch reference in CI.
+export path that bakes the network into the app.
+
+The Rust engine is verified **sample-for-sample against the PyTorch reference
+in CI** — the binary you download renders bit-honest to the research code that
+trained the models.
 
 ## License
 

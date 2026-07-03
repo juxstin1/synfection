@@ -1,6 +1,6 @@
 [package]
 name = "synfection"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "Turn any sound into a playable synth patch — clone, grow, and loop it. One small binary."
 license = "MIT"
@@ -13,6 +13,7 @@ eframe = "0.29"
 hound = "3.5"
 image = { version = "0.25", default-features = false, features = ["png"] }
 libm = "0.2"
+midly = "0.5"
 rand = { version = "0.8", features = ["small_rng"] }
 rayon = "1.8"
 realfft = "3"
@@ -25,3 +26,10 @@ serde_json = "1"
 [profile.release]
 lto = true
 strip = true
+
+# dev builds must be playable: DSP at -O0 makes every render 20-50x slower
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
