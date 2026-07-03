@@ -137,7 +137,7 @@ fn shaped_noise(t_len: usize, fc: f32, q: f32, sr: f32, rng: &mut SmallRng) -> V
 /// Genome + MIDI note -> audio in [-1,1]. Port of synth.py `render`.
 pub fn render(g: &Genome, midi: f32, sr: f32, n: usize, note_dur: f32, rng: &mut SmallRng) -> Vec<f32> {
     let p = denorm(g);
-    let [osc1_wt, osc2_wt, osc2_detune, osc_mix, sub_level, noise_level, drive, cutoff, reso, filt_env, filt_a, filt_d, amp_a, amp_d, amp_s, amp_r] =
+    let [osc1_wt, osc2_wt, osc2_detune, osc_mix, sub_level, noise_level, drive, cutoff, reso, filt_env, filt_a, filt_d, amp_a, amp_d, amp_s, amp_r, pitch_env, pitch_dec, lfo_rate, lfo_depth] =
         p;
 
     let f0 = midi_to_hz(midi);
@@ -146,7 +146,29 @@ pub fn render(g: &Genome, midi: f32, sr: f32, n: usize, note_dur: f32, rng: &mut
     let amp = adsr(amp_a, amp_d, amp_s, amp_r, n, sr, note_dur);
     let top = cutoff + filt_env * (nyq - cutoff);
     let fe = adsr(filt_a, filt_d, 0.25, amp_r, n, sr, note_dur);
-    let cutoff_curve: Vec<f32> = fe.iter().map(|e| cutoff + (top - cutoff) * e).collect();
+    let mut cutoff_curve: Vec<f32> = fe.iter().map(|e| cutoff + (top - cutoff) * e).collect();
+    if lfo_depth > 1e-6 {
+        let om = 2.0 * std::f32::consts::PI * lfo_rate / sr;
+        for (i, c) in cutoff_curve.iter_mut().enumerate() {
+            *c = (*c * 2.0f32.powf(lfo_depth * (om * i as f32).sin())).clamp(20.0, nyq);
+        }
+    }
+
+    // pitch envelope: start `pitch_env` semitones above the note, decay to it.
+    // Phase is the exclusive prefix-sum of the swept fundamental, accumulated
+    // in f64 (mirrors torch's cumsum) — degenerates to the old static phase
+    // exactly when pitch_env is 0. Per-harmonic filter/anti-alias stay keyed
+    // to the target frequency (the sweep is fast; this matches synth.py).
+    let ratio: Vec<f32> = (0..n)
+        .map(|i| 2.0f32.powf(pitch_env * (-(i as f32) / sr / pitch_dec).exp() / 12.0))
+        .collect();
+    let mut ph = vec![0.0f64; n];
+    let mut acc = 0.0f64;
+    for i in 0..n {
+        ph[i] = acc;
+        acc += f0 as f64 * ratio[i] as f64;
+    }
+    let pscale = 2.0 * std::f64::consts::PI / sr as f64;
 
     let mut sig = vec![0.0f32; n];
     let mut osc = |fund: f32, wt_pos: f32, weight: f32| {
@@ -154,6 +176,7 @@ pub fn render(g: &Genome, midi: f32, sr: f32, n: usize, note_dur: f32, rng: &mut
             return;
         }
         let prof = wt_profile(wt_pos);
+        let rel = (fund / f0) as f64;
         for k in 1..=MAX_HARM {
             let fk = fund * k as f32;
             let aa = sigmoid((nyq - fk) / (0.02 * nyq + 1.0));
@@ -161,10 +184,10 @@ pub fn render(g: &Genome, midi: f32, sr: f32, n: usize, note_dur: f32, rng: &mut
             if pk.abs() < 1e-8 {
                 continue;
             }
-            let omega = 2.0 * std::f32::consts::PI * fund * k as f32 / sr;
             for (i, s) in sig.iter_mut().enumerate() {
                 let mag = filter_mag(fk, cutoff_curve[i], reso);
-                *s += weight * pk * mag * (omega * i as f32).sin();
+                let phase = (ph[i] * pscale * rel) as f32;
+                *s += weight * pk * mag * (k as f32 * phase).sin();
             }
         }
     };
@@ -173,9 +196,9 @@ pub fn render(g: &Genome, midi: f32, sr: f32, n: usize, note_dur: f32, rng: &mut
     osc(f2, osc2_wt, osc_mix);
 
     let fsub = f0 / 2.0;
-    let omega_sub = 2.0 * std::f32::consts::PI * fsub / sr;
     for (i, s) in sig.iter_mut().enumerate() {
-        let sub = (omega_sub * i as f32).sin() * filter_mag(fsub, cutoff_curve[i], reso);
+        let phase = (ph[i] * pscale * 0.5) as f32;
+        let sub = phase.sin() * filter_mag(fsub, cutoff_curve[i], reso);
         *s += 0.6 * sub_level * sub;
     }
 

@@ -127,7 +127,8 @@ fn archetype_seeds_are_mostly_alive() {
     for arch in garden::ARCHETYPE_NAMES {
         let mut alive = 0;
         for _ in 0..6 {
-            let g = garden::sample_archetype(arch, &mut rng);
+            let mut g = garden::sample_archetype(arch, &mut rng);
+            garden::tidy(&mut g); // production paths (grow/lucky_dip) always tidy
             let a = synth::render_default(&g, garden::home_note(arch) as f32, &mut rng);
             if !garden::vet(&a, synth::SR).bad() {
                 alive += 1;

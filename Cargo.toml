@@ -1,6 +1,6 @@
 [package]
 name = "synfection"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2021"
 description = "Turn any sound into a playable synth patch — clone, grow, and loop it. One small binary."
 license = "MIT"

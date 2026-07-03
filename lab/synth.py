@@ -44,6 +44,10 @@ PARAMS = [
     ("amp_d",       0.02,   0.7,    True),   # amp decay
     ("amp_s",       0.0,    1.0,    False),  # amp sustain
     ("amp_r",       0.02,   0.7,    True),   # amp release
+    ("pitch_env",   0.0,    48.0,   False),  # start offset above the note (semitones)
+    ("pitch_dec",   0.005,  0.4,    True),   # pitch-env decay (s)
+    ("lfo_rate",    0.05,   12.0,   True),   # cutoff LFO (Hz)
+    ("lfo_depth",   0.0,    2.0,    False),  # cutoff LFO depth (± octaves)
 ]
 PARAM_NAMES = [p[0] for p in PARAMS]
 N_PARAMS = len(PARAMS)
@@ -105,19 +109,27 @@ def denorm(g):
 
 DRIVE_IDX = PARAM_NAMES.index("drive")
 
+V3_NEUTRAL = [0.0, 0.5, 0.4, 0.0]  # pitch_env, pitch_dec, lfo_rate, lfo_depth
+
+
 def upgrade_genome(g):
-    """v1 15-param genome -> current layout: insert neutral drive=0.
-    v1's saw<->square wave params land on roughly-similar wavetable positions,
-    so old genomes stay usable (approximate, not bit-exact). Accepts np array
-    or 1-d torch tensor; returns the same type."""
+    """Migrate any schema to current: v1 (15) inserts neutral drive=0, v2 (16)
+    pads neutral pitch-env/LFO, v3 (20) passes through. Accepts np array or
+    1-d torch tensor; returns the same type."""
     if len(g) == N_PARAMS:
         return g
-    if len(g) != N_PARAMS - 1:
-        raise ValueError(f"genome has {len(g)} params, expected {N_PARAMS} (or 15 legacy)")
-    if torch.is_tensor(g):
-        zero = torch.zeros(1, dtype=g.dtype, device=g.device)
-        return torch.cat([g[:DRIVE_IDX], zero, g[DRIVE_IDX:]])
-    return np.insert(np.asarray(g), DRIVE_IDX, 0.0)
+    if len(g) == 15:  # v1 -> v2: insert drive
+        if torch.is_tensor(g):
+            zero = torch.zeros(1, dtype=g.dtype, device=g.device)
+            g = torch.cat([g[:DRIVE_IDX], zero, g[DRIVE_IDX:]])
+        else:
+            g = np.insert(np.asarray(g), DRIVE_IDX, 0.0)
+    if len(g) == 16:  # v2 -> v3: pad neutral pitch-env/LFO
+        if torch.is_tensor(g):
+            pad = torch.tensor(V3_NEUTRAL, dtype=g.dtype, device=g.device)
+            return torch.cat([g, pad])
+        return np.concatenate([np.asarray(g), np.array(V3_NEUTRAL, dtype=np.float32)])
+    raise ValueError(f"genome has {len(g)} params, expected {N_PARAMS} (or 15/16 legacy)")
 
 
 def midi_to_hz(m):
@@ -193,11 +205,24 @@ def render(genome, midi_note, sr=SR, n=N, note_dur=NOTE_DUR, gen=None):
     fe = _adsr(g["filt_a"], g["filt_d"], torch.full_like(base, 0.25),
                g["amp_r"], n, sr, note_dur)
     cutoff_curve = base.unsqueeze(1) + (top - base).unsqueeze(1) * fe  # (B,T)
+    lfo = torch.sin(2.0 * np.pi * g["lfo_rate"].unsqueeze(1) * t.unsqueeze(0))
+    cutoff_curve = (cutoff_curve * 2.0 ** (g["lfo_depth"].unsqueeze(1) * lfo)).clamp(20.0, nyq)
     Q = g["reso"]
+
+    # pitch envelope: start `pitch_env` semitones above the note, decay to it.
+    # Phase = exclusive prefix-sum of the swept fundamental (f64 cumsum) —
+    # exactly the old static phase when pitch_env is 0. Per-harmonic filter/
+    # anti-alias stay keyed to the target frequency (the sweep is fast).
+    ratio = 2.0 ** (
+        g["pitch_env"].unsqueeze(1)
+        * torch.exp(-t.unsqueeze(0) / g["pitch_dec"].unsqueeze(1)) / 12.0
+    )                                                                # (B,T)
+    inst = f0.unsqueeze(1).double() * ratio.double()                 # (B,T) Hz
+    ph = (torch.cumsum(inst, dim=1) - inst) * (2.0 * np.pi / sr)     # (B,T) f64
 
     def osc(fund, wt_pos):
         out = torch.zeros(B, n, device=dev)
-        phase = 2.0 * np.pi * fund.unsqueeze(1) * t.unsqueeze(0)     # (B,T)
+        phase = (ph * (fund / f0).unsqueeze(1).double()).float()     # (B,T)
         prof_all = _wt_profile(wt_pos, dev)                         # (B,H) wavetable
         for k in range(1, MAX_HARM + 1):
             fk = fund * k                                            # (B,)
@@ -214,7 +239,7 @@ def render(genome, midi_note, sr=SR, n=N, note_dur=NOTE_DUR, gen=None):
     sig = (1.0 - g["osc_mix"]).unsqueeze(1) * o1 + g["osc_mix"].unsqueeze(1) * o2
 
     fsub = f0 / 2.0
-    sub = torch.sin(2.0 * np.pi * fsub.unsqueeze(1) * t.unsqueeze(0))
+    sub = torch.sin((ph * 0.5).float())
     sub = sub * _filter_mag(fsub.unsqueeze(1), cutoff_curve, Q.unsqueeze(1))
     sig = sig + 0.6 * g["sub_level"].unsqueeze(1) * sub
 

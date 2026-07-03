@@ -1,9 +1,12 @@
-//! The genome: 16 normalized [0,1] knobs and their real-value mappings.
+//! The genome: 20 normalized [0,1] knobs and their real-value mappings.
 //! Mirrors synth.py's PARAMS table exactly.
+//! Schema history: v1 = 15 (no drive) · v2 = 16 (+drive) · v3 = 20 (+pitch
+//! env, +cutoff LFO). New params append at the end so indices stay stable;
+//! `upgrade` migrates older genomes by padding neutral values.
 
 use anyhow::{bail, Context, Result};
 
-pub const N_PARAMS: usize = 16;
+pub const N_PARAMS: usize = 20;
 pub const DRIVE_IDX: usize = 6;
 
 /// (name, lo, hi, log-mapped)
@@ -24,7 +27,14 @@ pub const PARAMS: [(&str, f32, f32, bool); N_PARAMS] = [
     ("amp_d", 0.02, 0.7, true),
     ("amp_s", 0.0, 1.0, false),
     ("amp_r", 0.02, 0.7, true),
+    ("pitch_env", 0.0, 48.0, false), // start offset above the note (semitones)
+    ("pitch_dec", 0.005, 0.4, true), // pitch-env decay (s)
+    ("lfo_rate", 0.05, 12.0, true),  // cutoff LFO (Hz)
+    ("lfo_depth", 0.0, 2.0, false),  // cutoff LFO depth (± octaves)
 ];
+
+/// Neutral values for the v3 params — pad these onto older genomes.
+pub const V3_NEUTRAL: [f32; 4] = [0.0, 0.5, 0.4, 0.0];
 
 pub type Genome = [f32; N_PARAMS];
 
@@ -38,17 +48,20 @@ pub fn denorm(g: &Genome) -> Genome {
     out
 }
 
-/// Legacy 15-param (v1 engine) genome -> current: insert neutral drive=0.
+/// Migrate any schema version to current: v1 (15) inserts neutral drive=0,
+/// v2 (16) pads neutral pitch-env/LFO, v3 (20) passes through.
 pub fn upgrade(vals: &[f32]) -> Result<Genome> {
     let mut g = [0.0f32; N_PARAMS];
+    g[16..].copy_from_slice(&V3_NEUTRAL);
     match vals.len() {
         N_PARAMS => g.copy_from_slice(vals),
+        16 => g[..16].copy_from_slice(vals),
         15 => {
             g[..DRIVE_IDX].copy_from_slice(&vals[..DRIVE_IDX]);
             g[DRIVE_IDX] = 0.0;
-            g[DRIVE_IDX + 1..].copy_from_slice(&vals[DRIVE_IDX..]);
+            g[DRIVE_IDX + 1..16].copy_from_slice(&vals[DRIVE_IDX..]);
         }
-        n => bail!("genome has {n} params, expected {N_PARAMS} (or 15 legacy)"),
+        n => bail!("genome has {n} params, expected {N_PARAMS} (or 15/16 legacy)"),
     }
     Ok(g)
 }

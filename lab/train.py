@@ -25,6 +25,20 @@ NOTE_LO, NOTE_HI = 36, 72
 
 def sample_batch(B, dev, gen):
     g = torch.rand(B, N_PARAMS, device=dev, generator=gen)
+    # v3 params need a shaped distribution, not uniform: most real sounds
+    # don't sweep or wobble, so half the batch is neutral per dimension —
+    # and the dependent param snaps to its neutral value there, because
+    # pitch_dec/lfo_rate are unidentifiable (zero gradient, noise MSE
+    # target) when their master param is off. The active half is squared
+    # to bias toward musical amounts over 40-semitone sirens.
+    off = torch.rand(B, device=dev, generator=gen) < 0.5
+    g[:, 16] = g[:, 16] ** 2
+    g[off, 16] = 0.0
+    g[off, 17] = 0.5
+    off = torch.rand(B, device=dev, generator=gen) < 0.5
+    g[:, 19] = g[:, 19] ** 2
+    g[off, 19] = 0.0
+    g[off, 18] = 0.4
     notes = torch.randint(NOTE_LO, NOTE_HI + 1, (B,), device=dev, generator=gen).float()
     return g, notes
 
