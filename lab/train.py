@@ -15,6 +15,7 @@ import time
 import torch
 import torch.nn as nn
 
+from augment import augment
 from synth import render, melspec, N_PARAMS, SR
 from model import GenoNet, device
 from losses import multiscale_stft
@@ -47,6 +48,8 @@ def main():
     ap.add_argument("--val_every", type=int, default=200)
     ap.add_argument("--out", default="genonet.pt")
     ap.add_argument("--resume", default=None)
+    ap.add_argument("--augment", type=float, default=0.0,
+                    help="prob of real-world coloration on the input mel (0 = off)")
     a = ap.parse_args()
 
     dev = device()
@@ -71,7 +74,10 @@ def main():
         g, notes = sample_batch(a.bs, dev, gen)
         with torch.no_grad():
             target = render(g, notes, gen=gen)
-            tmel = melspec(target)
+            # color only what the net hears — the loss target stays clean,
+            # so it learns to see through real-world grime to honest genomes
+            heard = augment(target, gen, p=a.augment) if a.augment > 0 else target
+            tmel = melspec(heard)
         pred = net(tmel)
         recon = render(pred, notes)
         loss = a.param_w * mse(pred, g) + a.spec_w * multiscale_stft(recon, target)
