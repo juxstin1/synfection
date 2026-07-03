@@ -133,18 +133,18 @@ def is_dud(audio):
     return rms < 0.03 or active < 0.03
 
 
-def plan_counts(n):
+def plan_counts(n, archs=None):
     """Spread n patches across archetypes (round-robin) + a slice of seed mutants."""
-    archs = list(ARCHETYPES.keys())
+    archs = archs or list(ARCHETYPES.keys())
     counts = {a: 0 for a in archs}
     for i in range(n):
         counts[archs[i % len(archs)]] += 1
     return counts
 
 
-def generate(n, dev, rng, gen, seed_genome=None):
+def generate(n, dev, rng, gen, seed_genome=None, archs=None):
     """Return list of dicts {archetype,note,genome(np)} of n non-dud patches."""
-    counts = plan_counts(n)
+    counts = plan_counts(n, archs)
     kept = []
     for arch, want in counts.items():
         lo_n, hi_n = NOTE_RANGE[arch]
@@ -259,7 +259,16 @@ def main():
     ap.add_argument("--seed-genome", default=None,
                     help="path to a known-good *.genome.txt to anchor with mutants")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--archetypes", default=None,
+                    help="comma list to focus the round (e.g. bass,reese,stab); default all")
     a = ap.parse_args()
+
+    archs = None
+    if a.archetypes:
+        archs = [s.strip() for s in a.archetypes.split(",") if s.strip()]
+        unknown = [s for s in archs if s not in ARCHETYPES]
+        if unknown:
+            raise SystemExit(f"unknown archetypes {unknown}; known: {list(ARCHETYPES)}")
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     rng = np.random.default_rng(a.seed)
@@ -270,7 +279,7 @@ def main():
     if a.seed_genome and os.path.exists(a.seed_genome):
         seed_genome = upgrade_genome(np.loadtxt(a.seed_genome).astype(np.float32))
 
-    patches = generate(a.n, dev, rng, gen, seed_genome)
+    patches = generate(a.n, dev, rng, gen, seed_genome, archs)
 
     records = []
     for i, p in enumerate(patches):

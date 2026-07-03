@@ -1,0 +1,68 @@
+<!doctype html><html><head><meta charset=utf-8><title>synfection rater</title>
+<style>
+ body{font:15px/1.4 system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:24px}
+ h1{font-size:18px;margin:0 0 4px} .sub{color:#888;margin:0 0 18px}
+ .card{background:#1b1b1b;border:1px solid #2a2a2a;border-radius:10px;padding:14px 16px;
+   margin:10px 0;display:flex;align-items:center;gap:16px}
+ .card.done{border-color:#3a5} .meta{flex:1;min-width:0}
+ .name{font-weight:600} .tag{color:#7bd;font-size:13px} audio{height:34px}
+ .stars{font-size:26px;cursor:pointer;user-select:none;white-space:nowrap}
+ .stars span{color:#444;padding:0 1px} .stars span.on{color:#fc4}
+ .x{color:#a55;cursor:pointer;font-size:13px;padding-left:6px}
+ .x.on{color:#f55;font-weight:700}
+ textarea{background:#161616;color:#ccc;border:1px solid #333;border-radius:6px;
+   width:160px;height:34px;resize:none;font:13px system-ui}
+ #bar{position:sticky;top:0;background:#111;padding:10px 0;z-index:9;
+   display:flex;gap:12px;align-items:center;border-bottom:1px solid #222}
+ button{background:#2d7;color:#012;border:0;border-radius:6px;padding:8px 14px;
+   font-weight:700;cursor:pointer} #prog{color:#9c9}
+ kbd{background:#222;border:1px solid #333;border-radius:4px;padding:1px 5px;font-size:12px}
+</style></head><body>
+<h1>synfection — patch quality rater</h1>
+<p class=sub>48 patches. Click stars (1–5), or ✕ to discard. Keys: focus a card, press
+<kbd>1</kbd>–<kbd>5</kbd> to rate, <kbd>0</kbd> to discard, <kbd>Space</kbd> to play.
+Then <b>Export ratings.csv</b> and drop it into this folder.</p>
+<div id=bar><button onclick=expo()>⬇ Export ratings.csv</button>
+ <span id=prog></span></div>
+<div id=list></div>
+<script>
+const DATA = [{"id": 0, "file": "patch_000.wav", "archetype": "bass", "note": 40}, {"id": 1, "file": "patch_001.wav", "archetype": "stab", "note": 52}, {"id": 2, "file": "patch_002.wav", "archetype": "stab", "note": 47}, {"id": 3, "file": "patch_003.wav", "archetype": "stab", "note": 57}, {"id": 4, "file": "patch_004.wav", "archetype": "stab", "note": 58}, {"id": 5, "file": "patch_005.wav", "archetype": "bass", "note": 42}, {"id": 6, "file": "patch_006.wav", "archetype": "bass", "note": 43}, {"id": 7, "file": "patch_007.wav", "archetype": "bass", "note": 37}, {"id": 8, "file": "patch_008.wav", "archetype": "stab", "note": 54}, {"id": 9, "file": "patch_009.wav", "archetype": "stab", "note": 58}, {"id": 10, "file": "patch_010.wav", "archetype": "stab", "note": 57}, {"id": 11, "file": "patch_011.wav", "archetype": "reese", "note": 40}, {"id": 12, "file": "patch_012.wav", "archetype": "stab", "note": 49}, {"id": 13, "file": "patch_013.wav", "archetype": "stab", "note": 60}, {"id": 14, "file": "patch_014.wav", "archetype": "reese", "note": 44}, {"id": 15, "file": "patch_015.wav", "archetype": "reese", "note": 41}, {"id": 16, "file": "patch_016.wav", "archetype": "reese", "note": 45}, {"id": 17, "file": "patch_017.wav", "archetype": "stab", "note": 55}, {"id": 18, "file": "patch_018.wav", "archetype": "stab", "note": 47}, {"id": 19, "file": "patch_019.wav", "archetype": "reese", "note": 41}, {"id": 20, "file": "patch_020.wav", "archetype": "reese", "note": 40}, {"id": 21, "file": "patch_021.wav", "archetype": "stab", "note": 52}, {"id": 22, "file": "patch_022.wav", "archetype": "reese", "note": 41}, {"id": 23, "file": "patch_023.wav", "archetype": "stab", "note": 54}, {"id": 24, "file": "patch_024.wav", "archetype": "bass", "note": 40}, {"id": 25, "file": "patch_025.wav", "archetype": "reese", "note": 42}, {"id": 26, "file": "patch_026.wav", "archetype": "reese", "note": 34}, {"id": 27, "file": "patch_027.wav", "archetype": "bass", "note": 33}, {"id": 28, "file": "patch_028.wav", "archetype": "stab", "note": 48}, {"id": 29, "file": "patch_029.wav", "archetype": "bass", "note": 35}, {"id": 30, "file": "patch_030.wav", "archetype": "reese", "note": 43}, {"id": 31, "file": "patch_031.wav", "archetype": "bass", "note": 35}, {"id": 32, "file": "patch_032.wav", "archetype": "reese", "note": 41}, {"id": 33, "file": "patch_033.wav", "archetype": "reese", "note": 38}, {"id": 34, "file": "patch_034.wav", "archetype": "reese", "note": 44}, {"id": 35, "file": "patch_035.wav", "archetype": "bass", "note": 36}, {"id": 36, "file": "patch_036.wav", "archetype": "stab", "note": 50}, {"id": 37, "file": "patch_037.wav", "archetype": "bass", "note": 33}, {"id": 38, "file": "patch_038.wav", "archetype": "bass", "note": 33}, {"id": 39, "file": "patch_039.wav", "archetype": "reese", "note": 44}, {"id": 40, "file": "patch_040.wav", "archetype": "bass", "note": 38}, {"id": 41, "file": "patch_041.wav", "archetype": "bass", "note": 37}, {"id": 42, "file": "patch_042.wav", "archetype": "reese", "note": 39}, {"id": 43, "file": "patch_043.wav", "archetype": "bass", "note": 39}, {"id": 44, "file": "patch_044.wav", "archetype": "stab", "note": 57}, {"id": 45, "file": "patch_045.wav", "archetype": "bass", "note": 43}, {"id": 46, "file": "patch_046.wav", "archetype": "bass", "note": 37}, {"id": 47, "file": "patch_047.wav", "archetype": "reese", "note": 45}];
+const R = {};   // id -> {rating, notes}
+const list = document.getElementById('list');
+function draw(){
+ list.innerHTML='';
+ DATA.forEach((p,i)=>{
+  const r = R[p.id]||{rating:'',notes:''};
+  const card = document.createElement('div');
+  card.className='card'+(r.rating!==''?' done':''); card.tabIndex=0; card.dataset.i=i;
+  let stars='';
+  for(let s=1;s<=5;s++) stars+=`<span class="${r.rating>=s&&r.rating!==0?'on':''}" onclick="rate(${i},${s})">★</span>`;
+  card.innerHTML=`<div class=meta><div class=name>${p.file}</div>
+    <div class=tag>${p.archetype} · MIDI ${p.note}</div></div>
+    <audio controls preload=none src="${p.file}"></audio>
+    <div class=stars>${stars}<span class="x ${r.rating===0?'on':''}" onclick="rate(${i},0)">✕</span></div>
+    <textarea placeholder=notes oninput="note(${i},this.value)">${r.notes}</textarea>`;
+  list.appendChild(card);
+ });
+ const done=Object.values(R).filter(x=>x.rating!=='').length;
+ document.getElementById('prog').textContent=`${done} / ${DATA.length} rated`;
+}
+function rate(i,s){const p=DATA[i];R[p.id]={rating:s,notes:(R[p.id]||{}).notes||''};draw();}
+function note(i,v){const p=DATA[i];R[p.id]={rating:(R[p.id]||{rating:''}).rating,notes:v};}
+document.addEventListener('keydown',e=>{
+ const c=document.activeElement.closest?document.activeElement.closest('.card'):null;
+ if(!c)return; const i=+c.dataset.i;
+ if(e.key>='0'&&e.key<='5'){rate(i,+e.key);e.preventDefault();
+   const cards=[...document.querySelectorAll('.card')];if(cards[i+1])cards[i+1].focus();}
+ if(e.key===' '){const a=c.querySelector('audio');a.paused?a.play():a.pause();e.preventDefault();}
+});
+function expo(){
+ let csv='id,file,archetype,note,rating,notes\n';
+ DATA.forEach(p=>{const r=R[p.id]||{rating:'',notes:''};
+  const nt=(r.notes||'').replace(/"/g,'""');
+  csv+=`${p.id},${p.file},${p.archetype},${p.note},${r.rating},"${nt}"\n`;});
+ const b=new Blob([csv],{type:'text/csv'});const a=document.createElement('a');
+ a.href=URL.createObjectURL(b);a.download='ratings.csv';a.click();
+}
+draw();
+</script></body></html>
