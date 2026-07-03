@@ -14,3 +14,5 @@ variations/
 __pycache__/
 *.pyc
 lab/drums/
+*.log
+*.mid
