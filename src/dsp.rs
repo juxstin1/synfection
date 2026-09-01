@@ -206,11 +206,16 @@ pub fn safety(x: &mut [f32], sr: f32, looped: bool) {
     }
     // subsonic guard first: one-pole DC/rumble blocker at ~25 Hz so an 8 Hz
     // sub can't steal the normalization headroom. For loops, warm the filter
-    // state on the tail so the seam stays continuous.
+    // state on the tail so the seam stays continuous. The pole's time constant
+    // is 1/(1-a) = 6.37 ms at any sample rate (a is derived from sr), so 2048
+    // samples is 7.3 tau at 44.1 kHz -- residual initial-state error e^-7.3
+    // = 6.8e-4 of the tail's amplitude. Measured effect of the previous 8192
+    // (29 tau): <= 2.0e-4 absolute on real loop renders.
+    const WARM: usize = 2048;
     let a = 1.0 - std::f32::consts::TAU * 25.0 / sr;
     let (mut px, mut py) = (0.0f32, 0.0f32);
     if looped {
-        for &v in &x[x.len().saturating_sub(8192)..] {
+        for &v in &x[x.len().saturating_sub(WARM)..] {
             let y = v - px + a * py;
             px = v;
             py = y;

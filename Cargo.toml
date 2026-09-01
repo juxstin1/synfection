@@ -20,6 +20,23 @@ realfft = "3"
 rfd = "0.15"
 rodio = { version = "0.19", default-features = false }
 
+[features]
+# Offline measurement harnesses in examples/. Gated so `cargo test` (and CI)
+# never builds them: `cargo run --release --features study --example <name>`.
+study = []
+
+[[example]]
+name = "refine_study"
+required-features = ["study"]
+
+[[example]]
+name = "refine_seeds"
+required-features = ["study"]
+
+[[example]]
+name = "prewarm_ab"
+required-features = ["study"]
+
 [dev-dependencies]
 serde_json = "1"
 
