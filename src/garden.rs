@@ -1,5 +1,5 @@
 //! The garden: archetype priors + offspring growing, scored by the embedded
-//! RLHF reward model. Ported from genpatches.py's ARCHETYPES (v2 genome).
+//! RLHF reward model. Ported from genpatches.py's ARCHETYPES (v3 genome).
 
 use rand::rngs::SmallRng;
 use rand::Rng;
@@ -14,7 +14,8 @@ pub const ARCHETYPE_NAMES: [&str; 7] =
 
 /// (lo, hi) windows on the normalized genome, PARAMS order:
 /// osc1_wt, osc2_wt, osc2_detune, osc_mix, sub_level, noise_level, drive,
-/// cutoff, reso, filt_env, filt_a, filt_d, amp_a, amp_d, amp_s, amp_r
+/// cutoff, reso, filt_env, filt_a, filt_d, amp_a, amp_d, amp_s, amp_r,
+/// pitch_env, pitch_dec, lfo_rate, lfo_depth
 pub fn windows(arch: &str) -> [(f32, f32); N_PARAMS] {
     match arch {
         "bass" => [(0.3, 0.55), (0.0, 0.5), (0.46, 0.54), (0.2, 0.6), (0.5, 1.0), (0.0, 0.1),
@@ -156,7 +157,7 @@ pub fn vet(audio: &[f32], sr: f32) -> Vet {
     v
 }
 
-/// Post-generation hygiene: snap the detune dead-zone (±2¢ slow beating reads
+/// Post-generation hygiene: snap the detune dead-zone (±4¢ slow beating reads
 /// as "out of tune") and floor the amp decay when sustain is near zero so a
 /// generated pluck can't collapse into a tick. Generated genomes only — never
 /// applied to live slider values.
@@ -180,7 +181,8 @@ pub struct Seedling {
 }
 
 /// Grow a generation: mutants of `seed`, or archetype samples if `arch` given.
-/// Dud-filtered (one re-roll), reward-scored, sorted best-first.
+/// Vet-filtered (up to 3n attempts to fill n slots, so a generation may come
+/// back short), reward-scored, sorted best-first.
 pub fn grow(
     net: &Net,
     seed: &Genome,

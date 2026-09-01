@@ -21,6 +21,17 @@ use rand::{Rng, SeedableRng};
 use genome::{Genome, N_PARAMS, PARAMS};
 use wavio::write_wav;
 
+/// Write a wav through the same output-safety chain the UI uses, so anything
+/// the CLI saves carries the guarantees in `dsp::safety`: peak ceiling, RMS
+/// loudness cap, subsonic guard, soft-knee limit, and (one-shots only) edge
+/// fades. `looped` must be true for seamless loop buffers so the seam is not
+/// faded and the subsonic filter is warmed on the tail.
+fn write_safe(path: &str, audio: &[f32], sr: f32, looped: bool) -> Result<()> {
+    let mut a = audio.to_vec();
+    dsp::safety(&mut a, sr, looped);
+    write_wav(path, &a, sr)
+}
+
 #[derive(Parser)]
 #[command(name = "synfection", version, about = "Turn any sound into a playable synth patch — clone, grow, loop")]
 struct Cli {
@@ -155,7 +166,7 @@ fn main() -> Result<()> {
             let g = genome::load(&genome)?;
             let midi = genome::note_to_midi(&note)?;
             let mut rng = SmallRng::seed_from_u64(seed);
-            write_wav(&out, &synth::render_default(&g, midi as f32, &mut rng), synth::SR)?;
+            write_safe(&out, &synth::render_default(&g, midi as f32, &mut rng), synth::SR, false)?;
             println!("rendered genome at MIDI {midi} -> {out}");
             Ok(())
         }
@@ -172,7 +183,7 @@ fn main() -> Result<()> {
                 .with_context(|| format!("unknown pattern {pattern:?} (see `synfection patterns`)"))?;
             let mut rng = SmallRng::seed_from_u64(seed);
             let audio = loops::render_loop(&g, root, bpm, &pat, bars, swing, &mut rng);
-            write_wav(&out, &audio, loops::SR_OUT)?;
+            write_safe(&out, &audio, loops::SR_OUT, true)?;
             println!("loop -> {out}  ({key} {bpm:.0}bpm {pattern} {bars}bar 44.1k)");
             Ok(())
         }
@@ -184,7 +195,7 @@ fn main() -> Result<()> {
                 let mut g = [0.0f32; N_PARAMS];
                 g.iter_mut().for_each(|v| *v = rng.gen());
                 let audio = synth::render_default(&g, midi as f32, &mut rng);
-                write_wav(&format!("{dir}/patch_{i:02}.wav"), &audio, synth::SR)?;
+                write_safe(&format!("{dir}/patch_{i:02}.wav"), &audio, synth::SR, false)?;
             }
             println!("wrote {n} patches at {note} -> {dir}/");
             Ok(())
@@ -226,7 +237,7 @@ fn cmd_match(audio: &str, out: &str, note: Option<&str>, iters: usize, seed: u64
         guess
     };
 
-    write_wav(out, &synth::render_default(&g, midi as f32, &mut rng), synth::SR)?;
+    write_safe(out, &synth::render_default(&g, midi as f32, &mut rng), synth::SR, false)?;
     genome::save(&format!("{out}.genome.txt"), &g)?;
     genome::print_patch(&g);
     println!("remake -> {out}   genome -> {out}.genome.txt");
@@ -249,8 +260,8 @@ fn cmd_selftest(iters: usize) -> Result<()> {
     };
     println!("spec-loss  nn-only {l0:.3}  ->  refined {l1:.3}");
     println!("genome MAE nn-only {:.3}  ->  refined {:.3}", mae(&guess), mae(&g));
-    write_wav("selftest_target.wav", &target, synth::SR)?;
-    write_wav("selftest_remake.wav", &synth::render_default(&g, midi, &mut rng), synth::SR)?;
+    write_safe("selftest_target.wav", &target, synth::SR, false)?;
+    write_safe("selftest_remake.wav", &synth::render_default(&g, midi, &mut rng), synth::SR, false)?;
     genome::print_patch(&g);
     println!("wrote selftest_target.wav / selftest_remake.wav");
     Ok(())
@@ -290,10 +301,10 @@ fn cmd_vary(spec: &str, n: usize, amount: f32, note: &str, lock: &str, dir: &str
     let lock = lock_indices(lock)?;
     std::fs::create_dir_all(dir)?;
     let mut rng = SmallRng::seed_from_u64(seed);
-    write_wav(&format!("{dir}/original.wav"), &synth::render_default(&base, midi, &mut rng), synth::SR)?;
+    write_safe(&format!("{dir}/original.wav"), &synth::render_default(&base, midi, &mut rng), synth::SR, false)?;
     for i in 0..n {
         let v = mutate(&base, amount, &lock, &mut rng);
-        write_wav(&format!("{dir}/var_{i:02}.wav"), &synth::render_default(&v, midi, &mut rng), synth::SR)?;
+        write_safe(&format!("{dir}/var_{i:02}.wav"), &synth::render_default(&v, midi, &mut rng), synth::SR, false)?;
         genome::save(&format!("{dir}/var_{i:02}.genome.txt"), &v)?;
     }
     println!("spawned {n} sound variations at {note}  amount={amount} -> {dir}/");
@@ -306,15 +317,15 @@ fn cmd_breed(a: &str, b: &str, n: usize, amount: f32, note: &str, dir: &str, see
     let midi = genome::note_to_midi(note)? as f32;
     std::fs::create_dir_all(dir)?;
     let mut rng = SmallRng::seed_from_u64(seed);
-    write_wav(&format!("{dir}/parent_A.wav"), &synth::render_default(&pa, midi, &mut rng), synth::SR)?;
-    write_wav(&format!("{dir}/parent_B.wav"), &synth::render_default(&pb, midi, &mut rng), synth::SR)?;
+    write_safe(&format!("{dir}/parent_A.wav"), &synth::render_default(&pa, midi, &mut rng), synth::SR, false)?;
+    write_safe(&format!("{dir}/parent_B.wav"), &synth::render_default(&pb, midi, &mut rng), synth::SR, false)?;
     for i in 0..n {
         let mut child = [0.0f32; N_PARAMS];
         for j in 0..N_PARAMS {
             child[j] = if rng.gen_bool(0.5) { pa[j] } else { pb[j] }; // uniform crossover
         }
         let child = mutate(&child, amount * 0.5, &[], &mut rng);
-        write_wav(&format!("{dir}/child_{i:02}.wav"), &synth::render_default(&child, midi, &mut rng), synth::SR)?;
+        write_safe(&format!("{dir}/child_{i:02}.wav"), &synth::render_default(&child, midi, &mut rng), synth::SR, false)?;
         genome::save(&format!("{dir}/child_{i:02}.genome.txt"), &child)?;
     }
     println!("bred {n} children (+2 parents) at {note} -> {dir}/");

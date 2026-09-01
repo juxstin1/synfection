@@ -2,7 +2,7 @@
 reward_mel.py — perceptual reward model. Judges the *sound*, not the knob values.
 
 The genome reward model (reward.py) only learned archetype, not within-archetype
-quality — because raw 15-d params don't linearize "sounds good". This one renders
+quality — because raw N_PARAMS-d params don't linearize "sounds good". This one renders
 the patch and scores its **log-mel spectrogram** through a small CNN, so it can (in
 principle) tell a great reese from a mediocre one.
 

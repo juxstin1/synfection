@@ -1,4 +1,4 @@
-//! The differentiable synth engine, ported 1:1 from synth.py (v2, 16-param).
+//! The differentiable synth engine, ported 1:1 from synth.py (v3, 20-param).
 //! Two wavetable oscillators + sub + shaped noise -> time-varying resonant
 //! lowpass (2-pole magnitude per harmonic) -> ADSR amp/filter envelopes -> drive.
 
@@ -59,7 +59,8 @@ fn wt_profile(pos: f32) -> [f32; MAX_HARM] {
     out
 }
 
-/// Vectorized ADSR, same shape as synth.py's `_adsr`.
+/// ADSR envelope, same shape as synth.py's `_adsr` (scalar loop here; the
+/// Python original is vectorized).
 fn adsr(a: f32, d: f32, s: f32, r: f32, t_len: usize, sr: f32, note_dur: f32) -> Vec<f32> {
     let a_n = (a * sr).max(1.0);
     let d_n = (d * sr).max(1.0);

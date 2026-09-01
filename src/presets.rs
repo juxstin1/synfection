@@ -1,6 +1,7 @@
 //! Factory presets. Values are normalized [0,1] genomes in PARAMS order:
 //! osc1_wt, osc2_wt, osc2_detune, osc_mix, sub_level, noise_level, drive,
-//! cutoff, reso, filt_env, filt_a, filt_d, amp_a, amp_d, amp_s, amp_r
+//! cutoff, reso, filt_env, filt_a, filt_d, amp_a, amp_d, amp_s, amp_r,
+//! pitch_env, pitch_dec, lfo_rate, lfo_depth
 
 use crate::genome::Genome;
 

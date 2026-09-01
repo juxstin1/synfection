@@ -1,4 +1,4 @@
-//! GenoNet inference: log-mel -> 16-param genome. Weights (BatchNorm folded)
+//! GenoNet inference: log-mel -> 20-param genome. Weights (BatchNorm folded)
 //! are embedded in the binary — no model file to ship. See export_net.py.
 
 use std::collections::HashMap;

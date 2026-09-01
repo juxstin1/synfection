@@ -39,7 +39,7 @@ def stars_to_reward(stars):
 
 
 def load_rounds(round_dirs):
-    """Join patches.jsonl + ratings.csv by id across rounds. -> X(n,15), y(n,), meta."""
+    """Join patches.jsonl + ratings.csv by id across rounds. -> X(n,N_PARAMS), y(n,), meta."""
     X, y, meta = [], [], []
     for d in round_dirs:
         genomes = {}
@@ -73,7 +73,7 @@ def load_rounds(round_dirs):
 # ----- model ----------------------------------------------------------------
 
 class RewardNet(nn.Module):
-    """genome(15) -> reward[0,1]. Small + dropout-heavy; the dataset is tiny."""
+    """genome(N_PARAMS) -> reward[0,1]. Small + dropout-heavy; the dataset is tiny."""
     def __init__(self, d=N_PARAMS, h=32, p=0.2):
         super().__init__()
         self.net = nn.Sequential(

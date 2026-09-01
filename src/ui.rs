@@ -904,7 +904,8 @@ fn chip(p: &egui::Painter, pos: Pos2, text: &str, on: bool) {
     p.galley(rect.min + pad, galley, TEXT);
 }
 
-/// The plant: 16 branches around a glowing seed on a ticked dial.
+/// The plant: one branch per genome parameter (N_PARAMS) around a glowing
+/// seed on a ticked dial.
 fn plant(ui: &mut egui::Ui, g: &mut Genome, note: i32, size_hint: f32) -> bool {
     let side = ui.available_width().min(size_hint);
     let (resp, p) = ui.allocate_painter(Vec2::new(ui.available_width(), side), Sense::click_and_drag());
