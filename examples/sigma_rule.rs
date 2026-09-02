@@ -103,12 +103,19 @@ fn main() {
     }
     eprintln!("variant validated bit-exact against matcher::refine at grow=1.0");
 
-    let variants: [(&str, f32, f32, f32); 4] = [
-        ("shipped",      1.0, 0.995, 0.08),
-        ("rule_1.5",     1.5, 0.995, 0.08),
-        ("rule_1.3",     1.3, 0.995, 0.08),
+    let all: [(&str, f32, f32, f32); 4] = [
+        ("shipped", 1.0, 0.995, 0.08),
+        ("rule_1.5", 1.5, 0.995, 0.08),
+        ("rule_1.3", 1.3, 0.995, 0.08),
         ("rule_1.5_nodrift", 1.5, 1.0, 0.08),
     ];
+    // optional third arg: comma-separated variant names to run (default all)
+    let pick = a.get(2).cloned().unwrap_or_default();
+    let variants: Vec<(&str, f32, f32, f32)> = if pick.is_empty() {
+        all.to_vec()
+    } else {
+        all.iter().filter(|v| pick.split(',').any(|p| p == v.0)).copied().collect()
+    };
     println!("variant,trial,gens,l_init,l_final");
     for (name, grow, drift, s0) in variants {
         for t in 0..nt {
