@@ -34,7 +34,7 @@ struct Trace {
     sigma_end: f32,
 }
 
-fn refine_traced(guess: &Genome, target: &[f32], midi: f32, gens: usize, seed: u64) -> Trace {
+fn refine_traced(guess: &Genome, target: &[f32], midi: f32, gens: usize, seed: u64, grow: f32) -> Trace {
     const LAMBDA: usize = 16;
     let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(1));
     let mut best = *guess;
@@ -66,6 +66,7 @@ fn refine_traced(guess: &Genome, target: &[f32], midi: f32, gens: usize, seed: u
             best = cands[bi];
             improved += 1;
             last_improve = gen;
+            sigma = (sigma * grow).min(0.5);
         } else {
             sigma = (sigma * 0.85).max(0.005);
         }
@@ -89,6 +90,7 @@ fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let nt: usize = a.first().map(|s| s.parse().unwrap()).unwrap_or(10);
     let gens: usize = a.get(1).map(|s| s.parse().unwrap()).unwrap_or(60);
+    let grow: f32 = a.get(2).map(|s| s.parse().unwrap()).unwrap_or(1.0);
     let n = net::Net::load().expect("weights");
 
     // self-validation against the shipped refine
@@ -96,19 +98,19 @@ fn main() {
         let (note, target) = target_for(t);
         let init = matcher::guess(&n, &target).expect("guess");
         let (_g, lref) = matcher::refine(&init, &target, note as f32, 20, t as u64, |_, _| {});
-        let tr = refine_traced(&init, &target, note as f32, 20, t as u64);
+        let tr = refine_traced(&init, &target, note as f32, 20, t as u64, 1.0);
         assert_eq!(lref.to_bits(), tr.final_loss.to_bits(), "trace diverges from shipped refine");
     }
     eprintln!("trace validated bit-exact against matcher::refine");
 
-    println!("trial,gens,l_init,l_final,improved,floor_gen,last_improve,sigma_end");
+    println!("grow,trial,gens,l_init,l_final,improved,floor_gen,last_improve,sigma_end");
     for t in 0..nt {
         let (note, target) = target_for(t);
         let init = matcher::guess(&n, &target).expect("guess");
         let li = matcher::loss_of(&init, &target, note as f32, t as u64);
-        let tr = refine_traced(&init, &target, note as f32, gens, t as u64);
+        let tr = refine_traced(&init, &target, note as f32, gens, t as u64, grow);
         let fg = tr.floor_gen.map(|g| g as i64).unwrap_or(-1);
-        println!("{t},{gens},{li:.6},{:.6},{},{fg},{},{:.6}",
+        println!("{grow},{t},{gens},{li:.6},{:.6},{},{fg},{},{:.6}",
                  tr.final_loss, tr.improved, tr.last_improve, tr.sigma_end);
     }
 }
