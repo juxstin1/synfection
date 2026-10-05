@@ -237,6 +237,20 @@ Not in the genome. The UI knob `unison ∈ 0..1` runs `dsp::thicken`:
   relative to centre. Serum's inner voices will not be at exactly 0.45c;
   nobody will notice. Ship it as a flag, default off.
 
+### 4.11 Optional: the original sound as a sample layer
+Serum 2 can run an oscillator in sample mode. When the patch came from a
+clone, carry the source audio alongside the synthesized recipe:
+- File: the exact 1.2 s window the matcher used (loudest window, 22.05k mono,
+  peak-normalised to 0.9), written next to the JSON as `<name>.source.wav`.
+- Root key: the detected note, so keytracking plays it in tune.
+- Level: 0 by default. The patch opens sounding like the clone; raise the
+  sample for A/B, or layer the clone's sub under the original's top end.
+- Not through the filter, no loop, one-shot.
+- Only when the patch has a source clip. Presets and garden patches don't.
+
+CLI shape: `synfection export --serum --from-audio hook.wav` runs the match
+first, then exports with the sample layer attached.
+
 ---
 
 ## 5. Handoff JSON (what the exporter writes, what your automation reads)
@@ -275,7 +289,10 @@ applies the four calibration curves.
                   "depth_octaves": 0.0 },
   "drive": { "enabled": true, "curve": "tanh", "k": 6.0, "mix": 0.30,
              "placement": "post_voice_sum" },
-  "unison_thicken": { "enabled": false, "amount": 0.0 }
+  "unison_thicken": { "enabled": false, "amount": 0.0 },
+  "sample_layer": { "enabled": false, "file": null, "root_midi": 45,
+                    "level": 0.0, "keytrack": true, "loop": false,
+                    "through_filter": false }
 }
 ```
 
@@ -324,8 +341,8 @@ useful regardless and costs an afternoon.
 3. **cpal audio callback, MIDI in (midir), 8-voice poly** in the standalone.
 4. **Python twin of the new engine and retrain GenoNet.** Turn augmentation on
    by default (`train.py --augment` currently defaults to 0; confirm the
-   shipped `genonet.bin` was trained with it). Add a fine-tune set from your
-   own stems. Swap the (1+16)-ES refiner for CMA-ES: fewer of the ~1000
+   shipped `genonet.bin` was trained with it). Add the real-audio path from
+   section 9 so your own stems train it. Swap the (1+16)-ES refiner for CMA-ES: fewer of the ~1000
    renders per clone, better convergence. Only the trainer needs gradients;
    the Rust refiner is already gradient-free, so a non-differentiable filter
    in Rust costs nothing there.
@@ -354,3 +371,78 @@ the 22.05k render path (dies with the old engine).
 - `dsp::resample` is linear too. Use it only for feature extraction, as the
   comment says.
 - `train.py` `--augment` default 0.0 (see step 4).
+- `lab/drumset.py` writes `drums/oneshots/manifest.jsonl` "for real-data
+  training", and nothing in the repo reads it. The slicer exists, the loader
+  does not. Section 9 is that loader.
+
+---
+
+## 9. Real audio into training (the missing loader)
+
+Today every training example is a random genome the engine rendered for
+itself. Real audio never reaches `train.py`. The fix is small because the
+trainer already has the right loss: the spectral term compares re-rendered
+audio to target audio and needs no genome label, only the audio and its pitch.
+
+### 9.1 `lab/realset.py`: folder of sounds → training tensor
+
+```
+python realset.py --dir real/bass --out real/bass.npz [--label bass]
+python realset.py --manifest drums/oneshots/manifest.jsonl --labels kick --out real/kicks.npz
+```
+
+Per file, recursively (`wav`, `aif`, `flac`, `mp3` via librosa):
+1. Mono, resample to 22 050 Hz.
+2. Loudest 1.2 s window (`demos.best_window`), zero-pad to `N = 26 460`.
+3. Peak-normalise to 0.9. Matches engine output and the parity fixture.
+4. Pitch via `match.detect_note`. Drop the clip if unvoiced or outside
+   MIDI 36..72, the trainer's note range.
+5. Drop if window RMS is under −40 dBFS.
+
+Output `.npz`: `audio [n, N] float32`, `note [n] int`, `path [n] str`,
+`label [n] str` (folder name or `--label`). Never committed; `real/` goes in
+`.gitignore`.
+
+### 9.2 `train.py` additions
+
+```
+--real real/bass.npz real/kicks.npz    # one or more sets
+--real-frac 0.25                       # share of each batch drawn from them
+```
+
+Per step with batch size `B`: `k = round(real_frac · B)` rows sampled with
+replacement from the real sets, `B − k` synthetic rows as now.
+
+- Parameter MSE: synthetic rows only (mask the real rows; they have no label).
+- Spectral loss: all rows.
+- Augmentation: synthetic rows only. Real rows already carry real-world grime;
+  that is the point of them.
+- Validation: keep the synthetic val set as-is, hold out 10 % of each real set
+  and report its spectral loss separately as `val-real`. That number is the
+  one that tells you whether your stems are being learned.
+
+Guardrails: cap `real_frac` at 0.5 so synthetic rows keep anchoring the
+parameter head. Weight sets by size so a folder of 400 kicks does not drown
+30 basslines, or pass `--real-weights`.
+
+### 9.3 What to feed it, and what not to
+
+In lane for the current engine: basses, reeses, leads, plucks, stabs, kicks
+(the v3 pitch env exists for them). Out of lane: snares, hats, chords, pads
+with movement, anything stereo-wide. Out-of-lane audio teaches a 20-param mono
+engine to hedge and every match gets mushier. The restriction lifts with the
+engine in roadmap step 2.
+
+### 9.4 After that, taste on real sounds
+
+`reward_mel.py` scores a rendered mel. Nothing stops it scoring a real clip's
+mel. A rating round that mixes your own favourite one-shots with engine
+renders teaches the reward what "good" is independent of what the engine can
+make, which is the prior you want in the refiner once the engine can make
+more. One extra flag on `serve.py` to list wavs from a folder; no new model.
+
+### 9.5 Day-to-day once it exists
+
+Drop wavs into `real/<label>/`, run `realset.py` once per folder, add the
+`.npz` to the train command. No code. The rating loop was already code-free;
+this makes the matching loop match it.
