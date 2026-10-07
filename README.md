@@ -73,8 +73,9 @@ an isolated bass or lead (a one-shot, or a stem) works best.
 
 ## The sounds it knows
 
-The synth inside is a 16-ingredient recipe: two morphing wavetable oscillators,
-a sub, shaped noise, drive, a resonant filter, and full envelopes. The neural
+The synth inside is a 20-ingredient recipe: two morphing wavetable oscillators,
+a sub, shaped noise, drive, a resonant filter, full envelopes, a pitch
+envelope, and a filter LFO. The neural
 network taught itself to reverse-engineer that recipe by listening to
 **192,000 sounds it rendered for itself** — every bass, stab, and pluck the
 engine can make.

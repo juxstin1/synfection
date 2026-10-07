@@ -3,11 +3,10 @@
 Status: spec only. Nothing here is implemented yet. Written from a full read of
 `src/` and `lab/` at v0.6.0 so the numbers below are the engine's, not the README's.
 
-The one-line diagnosis: the engine was built to keep PyTorch happy, not to be
-played or to sound like hardware. Everything that feels "demo" about the app
-flows from that. The neural matcher is the valuable part and it is
-engine-agnostic. So the plan is: get the *results* into Serum 2 first (cheap,
-useful tomorrow), then replace the engine with a real-time voice, then retrain.
+The direction: we are **not** building a synth to compete with Serum. The
+neural matcher is the valuable part. Serum 2 is the sound engine and the
+teacher: first get synfection's results into Serum 2 (sections 1-6), then use
+Serum to generate labelled training data for the matcher (section 10).
 
 ---
 
@@ -329,33 +328,24 @@ Presets that stress each constant: `Acid Squelch` (A, B), `Reese Growl` (C),
 
 ## 7. The road after export
 
-Direction chosen: **instrument**, not matcher. Export first because it is
-useful regardless and costs an afternoon.
+Direction chosen: **Serum 2 is the engine**. synfection is the ear (audio to
+patch) and the taste. We do not write our own real-time synth.
 
-1. **Serum 2 export** (this doc).
-2. **Real-time voice in Rust.** Anti-aliased wavetable oscillators (mip-mapped
-   frames from the same table), a TPT state-variable or ladder filter with
-   `tanh` in the loop, linear ADSRs, 44.1/48k. Keep the 20-param genome so
-   every preset and saved patch survives. Ear-check preset by preset against
-   the old engine.
-3. **cpal audio callback, MIDI in (midir), 8-voice poly** in the standalone.
-4. **Python twin of the new engine and retrain GenoNet.** Turn augmentation on
-   by default (`train.py --augment` currently defaults to 0; confirm the
-   shipped `genonet.bin` was trained with it). Add the real-audio path from
-   section 9 so your own stems train it. Swap the (1+16)-ES refiner for CMA-ES: fewer of the ~1000
-   renders per clone, better convergence. Only the trainer needs gradients;
-   the Rust refiner is already gradient-free, so a non-differentiable filter
-   in Rust costs nothing there.
-5. **nih-plug wrapper** for CLAP + VST3. `nih_plug_egui` keeps the plant UI,
-   with an egui version wrangle (app is on eframe 0.29).
-6. **Grow the genome** only once the engine is settled: FM operator, second
-   filter, an LFO that can hit pitch and amp, stereo. Each is a retrain.
-7. **Taste model, properly.** Rate a fresh round on the new engine, ship the
-   mel reward (the binary currently only has the knob-space MLP, ~150 ratings
-   mostly on v1 renders), and hand it to the refiner as a prior.
+1. **Serum 2 export** (this doc, sections 4-6).
+2. **Real-audio training loader** (section 9). Cheap, works on today's engine.
+3. **Serum as teacher** (section 10): render Serum patches with known params,
+   train the net to predict Serum params. Needs the feasibility check in 10.2
+   to pass first.
+4. **CMA-ES refiner** in place of the (1+16)-ES: fewer of the ~1000 renders per
+   clone. Turn augmentation on by default (`train.py --augment` currently
+   defaults to 0; confirm the shipped `genonet.bin` was trained with it).
+5. **Taste model, properly.** Rate a fresh round, ship the mel reward (the
+   binary currently only has the knob-space MLP, ~150 ratings mostly on v1
+   renders), and hand it to the refiner as a prior.
 
-Stop investing in: the 12 built-in loop patterns (MIDI import covers it) and
-the 22.05k render path (dies with the old engine).
+Stop investing in: the 12 built-in loop patterns (MIDI import covers it).
+The built-in engine stays as the offline preview and the CLI renderer; it is not
+being grown or replaced.
 
 ---
 
@@ -365,9 +355,9 @@ the 22.05k render path (dies with the old engine).
   filter envelopes to twice the height of the preview (22.05k). Pin `top` to
   the 22.05k definition, or accept that loops are brighter and document it.
 - `wt_profile` rebuilds the whole wavetable on every call. Harmless today,
-  wasteful in a real-time voice. Build once, `static`.
+  wasteful per render. Build once, `static`.
 - `dsp::thicken` is linear-interp resampling; fine as a preview, aliasy as a
-  product. Dies with the new engine's real unison.
+  product. Fine for preview; Serum's own unison replaces it in the export.
 - `dsp::resample` is linear too. Use it only for feature extraction, as the
   comment says.
 - `train.py` `--augment` default 0.0 (see step 4).
@@ -430,8 +420,8 @@ parameter head. Weight sets by size so a folder of 400 kicks does not drown
 In lane for the current engine: basses, reeses, leads, plucks, stabs, kicks
 (the v3 pitch env exists for them). Out of lane: snares, hats, chords, pads
 with movement, anything stereo-wide. Out-of-lane audio teaches a 20-param mono
-engine to hedge and every match gets mushier. The restriction lifts with the
-engine in roadmap step 2.
+engine to hedge and every match gets mushier. The restriction lifts
+once the net predicts Serum params (section 10).
 
 ### 9.4 After that, taste on real sounds
 
@@ -446,3 +436,82 @@ more. One extra flag on `serve.py` to list wavs from a folder; no new model.
 Drop wavs into `real/<label>/`, run `realset.py` once per folder, add the
 `.npz` to the train command. No code. The rating loop was already code-free;
 this makes the matching loop match it.
+
+---
+
+## 10. Serum 2 as the teacher
+
+Idea: skip the hand-built engine. Render Serum 2 with random params we choose,
+so every clip has true labels, and train the net to predict Serum params.
+
+### 10.1 Why
+
+- Labels are real. No engine mismatch, so no hedging between what the sound is
+  and what a 20-param mono engine can say.
+- Nothing has to be differentiable. The spectral loss is only needed against
+  rendered audio, and the Serum renders are the ground truth.
+- No calibration constants (section 6): the net outputs Serum values directly.
+
+### 10.2 Feasibility check first (nothing else starts until this passes)
+
+Serum 2 is installed at `C:\Program Files\Common Files\VST3\Serum2.vst3`. Test
+in a headless host (pedalboard or DawDreamer, in a venv under `lab/`; adding it
+is a dependency, so confirm first):
+
+1. Loads and renders a note offline.
+2. Params are settable by name or index and the readback matches.
+3. Wavetable and preset loading work without the GUI.
+4. Render throughput: clips per minute, to size the dataset.
+
+If 2 or 3 fail, fall back to the section 4 export plus section 9 real audio.
+
+**Result [2026-10-07], `lab/serum_probe.py`, pedalboard 0.9.25 in `lab/.venv` (uv):**
+
+- Loads headless in about 8 s. The bundle holds two plugins, so pass
+  `plugin_name="Serum 2"`, and point at the inner
+  `Contents/x86_64-win/Serum2.vst3` binary (forward slashes).
+- 2,621 params, set by name, readback exact. Renders offline via MIDI bytes
+  (`p([(note_on,0),(note_off,dur)], duration=..., sample_rate=22050, reset=True)`).
+- Throughput: about 566 clips/min, so 50k clips is roughly 90 minutes.
+- Names found: `a_wt_pos` (wavetable position; `a_position` is the *sample*
+  start, not this), `filter_1_freq_hz`, `filter_1_res`, `env_1_*` (amp),
+  `env_2_*`. All but the env-2 routing audibly change the render.
+- Gotchas: the filter is **off** in the default state (`filter_1_on = 1.0`
+  needed). `env_2` does nothing until it is routed to cutoff in the mod
+  matrix, so "filter env depth" is the one param of the 8 that is not a plain
+  knob. Not yet checked: matrix params, loading a preset or wavetable.
+- **Mod matrix is not scriptable.** Each slot exposes only `mod_N_amount` and
+  `mod_N_out` (a level); the source and destination are not params. The saved
+  state (`p.raw_state`, 3 KB) is an opaque compressed blob, so routing cannot
+  be edited by hand. `raw_state` does round-trip, so a base state with
+  `env_2 -> filter_1 cutoff` can be made once in the Serum GUI
+  (`p.show_editor()`), saved to `lab/serum_base.state`, and loaded before each
+  render. Until someone does that, filter-env depth is out.
+- Verdict: feasible. Start with 7 params (everything but filter-env depth);
+  add the 8th when `serum_base.state` exists.
+
+### 10.3 Dataset
+
+Start with 7 params that map straight onto the genome: osc WT pos, cutoff,
+resonance, amp A/D/S/R. Filter env depth joins once the base state in 10.2
+exists. Random draws inside
+archetype windows (reuse `garden.rs` windows), one note per clip, 1.2 s at
+22.05k, same preprocessing as section 9.1. Widen the param set only once the
+7-param net trains.
+
+**Status [2026-10-07]:** `lab/serum_set.py` writes the 7-param set (raw 0..1
+labels, notes 36-60, filter forced on). 200 clips in 34 s, none silent, and
+re-rendering stored params reproduces the audio exactly (worst diff 0). Labels
+carry signal: spectral centroid vs cutoff r = +0.64, mid-level vs sustain
++0.48, late/early energy vs release +0.47. `a_wt_pos` is weak (r = +0.09 on
+centroid), so check it separately once there is a net. Not done: training
+(`train.py` has no `.npz`/Serum mode yet), a larger set, a baseline to beat.
+
+### 10.4 What it costs
+
+- Output is Serum patches. Hearing a result needs Serum 2; synfection stops
+  being fully standalone for this path. The built-in engine and the exporter
+  keep the no-install path alive.
+- Refinement through Serum is far slower than the Rust engine, so the net's
+  first guess has to carry more of the match.
+- Check the Serum 2 licence before shipping anything derived from its renders.

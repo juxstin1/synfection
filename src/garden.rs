@@ -1,5 +1,5 @@
 //! The garden: archetype priors + offspring growing, scored by the embedded
-//! RLHF reward model. Ported from genpatches.py's ARCHETYPES (v2 genome).
+//! RLHF reward model. Ported from genpatches.py's ARCHETYPES (v3 genome).
 
 use rand::rngs::SmallRng;
 use rand::Rng;
