@@ -24,12 +24,13 @@ data, training, and refinement. We backprop a **multi-scale spectral loss** from
 the rendered audio to the predicted parameters (the DDSP recipe), so matches
 sound right despite synth params being many-to-one.
 
-- **Engine** (`synth.py`, v2): 2 **wavetable** oscillators (8-frame harmonic
+- **Engine** (`synth.py`, v3): 2 **wavetable** oscillators (8-frame harmonic
   morph: sine → tri → square → saw → pulses → formant → rich) + sub sine +
   spectrally-shaped noise + **drive/waveshaper** → time-varying **resonant
   lowpass** (analog 2-pole magnitude evaluated per-harmonic, fully
-  differentiable) → ADSR amp + filter envelopes. **16-parameter genome.**
-- **Net** (`model.py`): compact CNN, log-mel → 16 params (sigmoid).
+  differentiable) → ADSR amp + filter envelopes, plus a **pitch envelope** (808 drops) and a
+  **cutoff LFO**. **20-parameter genome.**
+- **Net** (`model.py`): compact CNN, log-mel → 20 params (sigmoid).
 - **Loss** (`losses.py`): multi-scale STFT (5 FFT sizes, lin + log magnitude).
 - **Training** (`train.py`): **on-the-fly infinite data** — every step samples
   random genomes+notes, renders targets, and trains the net to invert them with
@@ -38,7 +39,7 @@ sound right despite synth params being many-to-one.
   (the Rust binary uses a (1+λ) evolution strategy instead — no autograd).
 
 Genome: `osc1_wt, osc2_wt, osc2_detune, osc_mix, sub_level, noise_level, drive,
-cutoff, reso, filt_env, filt_a, filt_d, amp_a, amp_d, amp_s, amp_r`.
+cutoff, reso, filt_env, filt_a, filt_d, amp_a, amp_d, amp_s, amp_r, pitch_env, pitch_dec, lfo_rate, lfo_depth`.
 
 The shipped checkpoint was trained for **6000 steps × batch 32 = 192,000
 freshly-rendered examples** (`train.log`): val spectral loss 3.66 → 1.51,

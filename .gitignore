@@ -16,3 +16,6 @@ __pycache__/
 lab/drums/
 *.log
 *.mid
+lab/.venv/
+real/
+lab/.venv-train/

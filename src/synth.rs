@@ -1,4 +1,4 @@
-//! The differentiable synth engine, ported 1:1 from synth.py (v2, 16-param).
+//! The differentiable synth engine, ported 1:1 from synth.py (v3, 20-param).
 //! Two wavetable oscillators + sub + shaped noise -> time-varying resonant
 //! lowpass (2-pole magnitude per harmonic) -> ADSR amp/filter envelopes -> drive.
 
