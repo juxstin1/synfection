@@ -9,6 +9,7 @@ mod matcher;
 mod midiio;
 mod net;
 mod presets;
+mod serum;
 mod synth;
 mod ui;
 mod wavio;
@@ -58,6 +59,17 @@ enum Cmd {
         out: String,
         #[arg(long, default_value_t = 0)]
         seed: u64,
+    },
+    /// Turn Serum 2 knob values ("A WT Pos=0.3, Filter 1 Freq=0.7" or a file) into a patch
+    FromSerum {
+        knobs: String,
+        #[arg(short, long, default_value = "C3")]
+        note: String,
+        #[arg(short, long, default_value = "serum-patch.txt")]
+        out: String,
+        /// also render the patch to this wav
+        #[arg(long)]
+        wav: Option<String>,
     },
     /// Spawn mutated sibling sounds of a patch
     Vary {
@@ -157,6 +169,18 @@ fn main() -> Result<()> {
             let mut rng = SmallRng::seed_from_u64(seed);
             write_wav(&out, &synth::render_default(&g, midi as f32, &mut rng), synth::SR)?;
             println!("rendered genome at MIDI {midi} -> {out}");
+            Ok(())
+        }
+        Cmd::FromSerum { knobs, note, out, wav } => {
+            let g = serum::to_genome(&serum::parse(&knobs)?)?;
+            let midi = genome::note_to_midi(&note)?;
+            genome::save_patch(std::path::Path::new(&out), &g, midi)?;
+            println!("serum knobs -> {out}");
+            if let Some(wav) = wav {
+                let mut rng = SmallRng::seed_from_u64(0);
+                write_wav(&wav, &synth::render_default(&g, midi as f32, &mut rng), synth::SR)?;
+                println!("rendered at MIDI {midi} -> {wav}");
+            }
             Ok(())
         }
         Cmd::Vary { genome, n, amount, note, lock, dir, seed } => {

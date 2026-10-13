@@ -1,0 +1,4 @@
+# Local offline capture tooling; independent of the PyTorch training environment.
+serum-render==0.5.0
+dawdreamer==0.9.0
+serum2-preset-loader==0.1.3
