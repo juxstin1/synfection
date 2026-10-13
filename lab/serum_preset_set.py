@@ -1,8 +1,14 @@
 """Serum 2 -> labelled training set built on the user's own presets (HANDOFF.md 10.3).
 
-Each clip: load one of your .SerumPreset files as the base patch, randomize the
-7 labelled knobs (same names/windows as serum_set.py), render 1.2 s at 22.05k
-mono. Labels are exact (readback verified), the timbre is your preset's.
+Each clip: load one of your .SerumPreset files as the base patch, zero Serum's
+global randomizers, randomize the 10 labelled knobs, render 1.2 s at 22.05k
+mono. Labels are exact, the timbre is your preset's.
+
+Knob set and derandomizing come from serum_knob_probe.py (2026-10-12): with the
+randomizers on, repeat renders of the same settings differed on 28/49 presets
+by as much as most knobs move the sound, so labels were partly noise. Each knob
+here changes the sound audibly on roughly half or more of the presets once
+derandomized; macros were audible too but mean something different per preset.
 
 Validation is split BY PRESET (stable hash), so val measures generalization to
 presets the net never heard, not memorized timbres.
@@ -26,17 +32,30 @@ ROOT = Path(__file__).resolve().parents[1]
 VST = "C:/Program Files/Common Files/VST3/Serum2.vst3"
 SR, N, NOTE_DUR, TAIL = 22050, 26460, 0.85, 0.35
 NOTE_LO, NOTE_HI = 36, 60
-# (Serum display name, lo, hi) windows on the raw 0..1 value — mirrors serum_set.py
+# (Serum display name, lo, hi) windows on the raw 0..1 value
 PARAMS = [
     ("A WT Pos", 0.0, 1.0),
+    ("A Level", 0.3, 1.0),  # floor keeps osc A from going silent
+    ("B Level", 0.0, 1.0),
     ("Filter 1 Freq", 0.15, 0.95),
     ("Filter 1 Res", 0.0, 0.7),
+    ("Filter 1 Drive", 0.0, 0.8),
     ("Env 1 Attack", 0.0, 0.45),
     ("Env 1 Decay", 0.0, 0.8),
     ("Env 1 Sustain", 0.0, 1.0),
     ("Env 1 Release", 0.0, 0.6),
 ]
 VAL_PCT = 15
+# Serum's per-note randomness; zeroed so the same knobs always give the same audio.
+RANDOMIZERS = ["Env Rand", "Cutoff Rand", "Osc Detune Rnd", "Osc Pan Rand",
+               "A Rand Phase", "B Rand Phase", "C Rand Phase", "Noise Rand Phase",
+               "A Uni Rand Start", "B Uni Rand Start", "C Uni Rand Start"]
+
+
+def derandomize(syn, idx):
+    for name in RANDOMIZERS:
+        if name in idx:
+            syn.set_parameter(idx[name], 0.0)
 
 
 def preset_dirs():
@@ -109,6 +128,7 @@ def worker(job_path):
                 raise RuntimeError("every preset failed to load")
             continue
         v = lo + (hi - lo) * rng.random(len(PARAMS))
+        derandomize(syn, idx)
         syn.set_parameter(filt_on, 1.0)
         for i, x in zip(knobs, v):
             syn.set_parameter(i, float(x))
@@ -139,7 +159,7 @@ def main():
     ap.add_argument("--n", type=int, default=50000, help="total clips (train + val)")
     ap.add_argument("--shard", type=int, default=1000)
     ap.add_argument("--jobs", type=int, default=8, help="parallel Serum processes")
-    ap.add_argument("--out", type=Path, default=ROOT / "real/serum_presets")
+    ap.add_argument("--out", type=Path, default=ROOT / "real/serum_presets_v2")
     ap.add_argument("--timeout", type=int, default=1800, help="seconds per shard")
     ap.add_argument("--worker", type=Path, help=argparse.SUPPRESS)
     a = ap.parse_args()
@@ -157,7 +177,7 @@ def main():
     a.out.mkdir(parents=True, exist_ok=True)
     meta = {"params": [p[0] for p in PARAMS], "windows": [p[1:] for p in PARAMS],
             "sr": SR, "n": N, "note_range": [NOTE_LO, NOTE_HI],
-            "presets": [str(p) for p in presets], "val_presets": val}
+            "presets": [str(p) for p in presets], "val_presets": val, "derandomized": True}
     (a.out / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(f"{len(presets)} presets: {len(train)} train / {len(val)} val (held out)", flush=True)
 

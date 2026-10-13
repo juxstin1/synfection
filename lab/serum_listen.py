@@ -77,7 +77,9 @@ def predict(a):
         sf.write(folder / "target.wav", audio[i], meta["sr"], subtype="PCM_16")
         jobs.append({"dir": str(folder), "preset": meta["presets"][int(pre[i])], "note": int(note[i]),
                      "knobs": names, "true": params[i].tolist(), "net": net_raw[k].tolist(),
-                     "mean": mean_raw.tolist()})
+                     "mean": mean_raw.tolist(),
+                     # v1 data was rendered with Serum's randomizers on; match whatever the shards used.
+                     "derand": meta.get("derandomized", False)})
     (a.out / "jobs.json").write_text(json.dumps(jobs, indent=2), encoding="utf-8")
     print(f"predicted {len(jobs)} clips from {len(val)} held-out presets on {dev}", flush=True)
     return jobs, meta
@@ -88,7 +90,7 @@ def worker(jobs_path):
     import numpy as np
     import soundfile as sf
     import tempfile
-    from serum_preset_set import NOTE_DUR, TAIL, N, SR, VST, hard_exit
+    from serum_preset_set import NOTE_DUR, TAIL, N, SR, VST, derandomize, hard_exit
     from serum2_preset_loader import convert_preset_file
 
     jobs = json.loads(Path(jobs_path).read_text(encoding="utf-8"))
@@ -107,6 +109,8 @@ def worker(jobs_path):
             # Reload the preset each time so nothing carries over between renders.
             state.write_bytes(blobs[job["preset"]])
             syn.load_state(str(state))
+            if job["derand"]:
+                derandomize(syn, idx)
             syn.set_parameter(idx["Filter 1 On"], 1.0)
             for name, v in zip(job["knobs"], job[kind]):
                 syn.set_parameter(idx[name], float(v))
