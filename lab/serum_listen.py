@@ -6,6 +6,8 @@ renders of the same preset + note, each peak-normalized like the training set:
   target.wav  the real Serum clip from the val shard (true knob values)
   net.wav     same preset, the 7 knobs set to the net's prediction
   mean.wav    same preset, the 7 knobs set to the train-set mean (the baseline)
+  syn.wav     Synfection itself playing the net's knobs (`synfection from-serum`),
+              on a neutral patch: only those knobs carry over, not the preset
 
 If net.wav isn't audibly closer to target.wav than mean.wav is, the net
 hasn't learned anything you can hear, whatever the MAE says.
@@ -26,6 +28,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 VENV = ROOT / ".venv-serum/Scripts/python.exe"
+BINARY = ROOT / "target/release/synfection.exe"
 
 
 def predict(a):
@@ -33,7 +36,7 @@ def predict(a):
     import soundfile as sf
     import torch
     sys.path.insert(0, str(ROOT / "lab"))
-    from model import GenoNet, device
+    from model import GenoNet
     from synth import melspec
 
     meta = json.loads((a.data / "meta.json").read_text(encoding="utf-8"))
@@ -60,7 +63,7 @@ def predict(a):
         idx = np.flatnonzero(pre == pid)
         pick += sorted(rng.choice(idx, min(a.per_preset, len(idx)), replace=False).tolist())
 
-    dev = device()
+    dev = torch.device("cpu")  # a few dozen clips; keep the GPU free for training runs
     net = GenoNet(n_params=len(names)).to(dev)
     net.load_state_dict(torch.load(a.net, map_location=dev))
     net.eval()
@@ -128,6 +131,21 @@ def worker(jobs_path):
     hard_exit(0)
 
 
+def synfection(jobs):
+    """Same knob guesses, played by Synfection's own engine instead of Serum."""
+    import numpy as np
+    import soundfile as sf
+    for job in jobs:
+        folder = Path(job["dir"])
+        knobs = ", ".join(f"{n}={min(max(v, 0.0), 1.0):.4f}" for n, v in zip(job["knobs"], job["net"]))
+        subprocess.run([str(BINARY), "from-serum", knobs, "--note", str(job["note"]),
+                        "--out", str(folder / "syn.txt"), "--wav", str(folder / "syn.wav")],
+                       check=True, capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        x, sr = sf.read(folder / "syn.wav", dtype="float32")
+        peak = float(np.abs(x).max())
+        sf.write(folder / "syn.wav", x / peak * 0.9 if peak >= 1e-4 else x, sr, subtype="PCM_16")
+
+
 def gallery(out, jobs):
     cards = []
     for job in jobs:
@@ -140,6 +158,7 @@ def gallery(out, jobs):
 <label>Target: real Serum, true knobs<audio controls preload="none" src="{rel}/target.wav"></audio></label>
 <label>Net guess<audio controls preload="none" src="{rel}/net.wav"></audio></label>
 <label>Baseline: train-mean knobs<audio controls preload="none" src="{rel}/mean.wav"></audio></label>
+<label>Synfection playing the net's knobs<audio controls preload="none" src="{rel}/syn.wav"></audio></label>
 <details><summary>Knob values</summary><table><tr><th>knob</th><th>true</th><th>net</th><th>mean</th><th>net vs mean error</th></tr>{rows}</table></details></article>""")
     page = """<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Serum net listening</title><style>
@@ -175,6 +194,7 @@ def main():
     # Serum's teardown crash gives a nonzero exit; the marker file is the real success signal.
     if not (a.out / "rendered.json").exists():
         sys.exit(f"render failed (exit {r.returncode}); see {a.out / 'render.log'}")
+    synfection(jobs)
     gallery(a.out, jobs)
     print(f"gallery: {a.out / 'index.html'}", flush=True)
 
