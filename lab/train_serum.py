@@ -53,9 +53,6 @@ def main():
     ap.add_argument("--bs", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--out", type=Path, default=Path("lab/serum_net.pt"))
-    ap.add_argument("--wt-min", type=float, default=2.0,
-                    help="A WT Pos only counts on presets where serum_wt_probe.py heard it "
-                         "at least this many times above Serum's repeat-render noise")
     a = ap.parse_args()
     dev = device()
     mel, par, pre, meta = load_mels(a.data, dev)
@@ -64,15 +61,6 @@ def main():
     lo = np.array([w[0] for w in meta["windows"]], np.float32)
     hi = np.array([w[1] for w in meta["windows"]], np.float32)
     y = (par - lo) / (hi - lo)
-    # Per-label weight: 0 where the knob is inaudible, so its label is noise, not signal.
-    w = np.ones_like(y)
-    aud_path = a.data / "wt_audibility.json"
-    if aud_path.exists() and "A WT Pos" in names:
-        aud = {int(k): v for k, v in json.loads(aud_path.read_text(encoding="utf-8")).items()}
-        hear = np.array([aud.get(int(p), 0.0) >= a.wt_min for p in pre], np.float32)
-        w[:, names.index("A WT Pos")] = hear
-        print(f"A WT Pos audible (x{a.wt_min}+) on {sum(v >= a.wt_min for v in aud.values())}"
-              f"/{len(aud)} presets; masked elsewhere", flush=True)
     val = np.isin(pre, meta["val_presets"])
     tr = ~val
     print(f"device={dev}  clips {len(y)}: train {tr.sum()} / val {val.sum()} "
@@ -80,9 +68,7 @@ def main():
 
     Xtr = torch.from_numpy(mel[tr]).to(dev); Ytr = torch.from_numpy(y[tr]).to(dev)
     Xva = torch.from_numpy(mel[val]).to(dev); Yva = torch.from_numpy(y[val]).to(dev)
-    Wtr = torch.from_numpy(w[tr]).to(dev); Wva = torch.from_numpy(w[val]).to(dev)
-    wmae = lambda p: ((p - Yva).abs() * Wva).sum(0) / Wva.sum(0).clamp(min=1)
-    base = wmae((Ytr * Wtr).sum(0) / Wtr.sum(0).clamp(min=1))  # mean-predictor MAE per knob
+    base = (Yva - Ytr.mean(0)).abs().mean(0)  # mean-predictor MAE per knob
     print("baseline (predict train mean) val MAE: " +
           "  ".join(f"{n}={v:.3f}" for n, v in zip(names, base.tolist())), flush=True)
 
@@ -90,6 +76,7 @@ def main():
     steps = a.epochs * (len(Xtr) // a.bs)
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=a.lr, total_steps=steps, pct_start=0.1)
+    mse = nn.MSELoss()
     gen = torch.Generator(device=dev).manual_seed(0)
     best, best_mae, t0 = float("inf"), None, time.time()
     for ep in range(1, a.epochs + 1):
@@ -97,12 +84,12 @@ def main():
         order = torch.randperm(len(Xtr), device=dev, generator=gen)
         for i in range(len(Xtr) // a.bs):
             b = order[i * a.bs:(i + 1) * a.bs]
-            loss = ((net(Xtr[b].float()) - Ytr[b]) ** 2 * Wtr[b]).mean()
+            loss = mse(net(Xtr[b].float()), Ytr[b])
             opt.zero_grad(); loss.backward(); opt.step(); sched.step()
         net.eval()
         with torch.no_grad():
             pv = torch.cat([net(Xva[i:i + 1024].float()) for i in range(0, len(Xva), 1024)])
-            mae = wmae(pv)
+            mae = (pv - Yva).abs().mean(0)
         m = mae.mean().item()
         mark = ""
         if m < best:
