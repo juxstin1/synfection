@@ -1,0 +1,50 @@
+{
+  "val_presets": [
+    "C:\\Users\\juxxs\\Documents\\Xfer\\Serum 2 Presets\\Presets\\User\\Imported Packs\\Bass\\7S_TALES2_BA_Twisted_Sub.SerumPreset",
+    "C:\\Users\\juxxs\\Documents\\Xfer\\Serum 2 Presets\\Presets\\User\\Imported Packs\\Bass\\VOX_MDTH_bass_synth_flukey.SerumPreset",
+    "C:\\Users\\juxxs\\Documents\\Xfer\\Serum 2 Presets\\Presets\\User\\Imported Packs\\Keys\\SFM_VS_keys_e_piano_sk1.SerumPreset",
+    "C:\\Users\\juxxs\\Documents\\Xfer\\Serum 2 Presets\\Presets\\User\\Imported Packs\\Lead\\FF_MHT_Lead_rufus.SerumPreset",
+    "C:\\Users\\juxxs\\Documents\\Xfer\\Serum 2 Presets\\Presets\\User\\Imported Packs\\Pad\\7S_TALES2_PD_Padstination.SerumPreset",
+    "C:\\Users\\juxxs\\Documents\\Xfer\\Serum 2 Presets\\Presets\\User\\Imported Packs\\Pad\\FF_MHT_Pad_anjunas_pad.SerumPreset",
+    "C:\\Users\\juxxs\\Documents\\Xfer\\Serum 2 Presets\\Presets\\User\\ReesesPatch.SerumPreset"
+  ],
+  "per_param": {
+    "A WT Pos": {
+      "net": 0.2616,
+      "baseline": 0.2486,
+      "gain_pct": -5.2
+    },
+    "Filter 1 Freq": {
+      "net": 0.2129,
+      "baseline": 0.2495,
+      "gain_pct": 14.6
+    },
+    "Filter 1 Res": {
+      "net": 0.2143,
+      "baseline": 0.2523,
+      "gain_pct": 15.1
+    },
+    "Env 1 Attack": {
+      "net": 0.2354,
+      "baseline": 0.2513,
+      "gain_pct": 6.3
+    },
+    "Env 1 Decay": {
+      "net": 0.1749,
+      "baseline": 0.246,
+      "gain_pct": 28.9
+    },
+    "Env 1 Sustain": {
+      "net": 0.2149,
+      "baseline": 0.2505,
+      "gain_pct": 14.2
+    },
+    "Env 1 Release": {
+      "net": 0.1818,
+      "baseline": 0.252,
+      "gain_pct": 27.9
+    }
+  },
+  "val_mae": 0.2137,
+  "baseline_mae": 0.25
+}
